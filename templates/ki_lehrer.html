@@ -48,6 +48,13 @@
     <!-- LEFT: Avatar + Chat -->
     <div class="kl-left">
       <div class="kl-avatar-section">
+        <!-- Chalk decorations on the blackboard -->
+        <div class="kl-chalk-deco" aria-hidden="true">
+          <span class="kl-chalk kl-chalk-tl">Pflege&shy;ausbildung</span>
+          <span class="kl-chalk kl-chalk-tr">A1 – C1</span>
+          <span class="kl-chalk kl-chalk-formula">∑ Wissen + Praxis</span>
+        </div>
+
         <div class="kl-avatar-wrap" id="kl-avatar-wrap">
           <div id="kl-avatar-container" style="width:100%;height:100%;"></div>
           <div class="kl-avatar-fallback" id="kl-avatar-fallback">🎓</div>
@@ -102,7 +109,7 @@
                 <span id="kl-ppt-source-text"></span>
               </div>
               <div class="kl-ppt-slide-footer">
-                <span class="kl-ppt-footer-text">careLearn · Prof. Wagner</span>
+                <span class="kl-ppt-footer-text">Cura · Prof. Wagner</span>
               </div>
             </div>
           </div>
@@ -419,12 +426,36 @@ function klRemoveLoadingBubble() {
   if (el) el.remove();
 }
 
-// ── Spracheingabe (ElevenLabs STT via MediaRecorder) ──────────────
+// ── Spracheingabe ──────────────────────────────────────────────────
+// Automatically picks the best available STT method:
+//   1. ElevenLabs Scribe (server-side, via MediaRecorder) – wenn Quota vorhanden
+//   2. Web Speech API (browser-native, Chrome/Edge, kein API-Key nötig) – immer als Fallback
+let klSttMode        = 'unknown';   // 'elevenlabs' | 'webspeech'
 let klMediaRecorder  = null;
 let klAudioChunks    = [];
 let klSilenceTimer   = null;
 let klAudioAnalyser  = null;
 let klAudioStream    = null;
+let klHadRealSpeech  = false;
+let klWebSpeechRec   = null;
+
+const KL_SILENCE_THRESHOLD = 6;   // RMS below this = silence
+const KL_SPEECH_THRESHOLD  = 12;  // RMS must exceed this at least once → counts as real speech
+
+// Probe ElevenLabs STT once; set klSttMode so klStartMic knows which path to use
+async function klDetectSttMode() {
+  try {
+    const r = await fetch('/api/stt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/webm' },
+      body: new Blob([], { type: 'audio/webm' })
+    });
+    const d = await r.json();
+    klSttMode = (d.error === 'stt_unavailable') ? 'webspeech' : 'elevenlabs';
+  } catch(e) {
+    klSttMode = 'webspeech';
+  }
+}
 
 function klToggleMic() {
   window.klResumeAudio && window.klResumeAudio();
@@ -437,6 +468,16 @@ function klToggleMic() {
 async function klStartMic() {
   if (klIsRecording || klIsLoading) return;
 
+  // Detect mode on first use
+  if (klSttMode === 'unknown') await klDetectSttMode();
+
+  // ── Path A: Web Speech API (browser-native, no API key) ───────
+  if (klSttMode === 'webspeech') {
+    klStartWebSpeech();
+    return;
+  }
+
+  // ── Path B: MediaRecorder → ElevenLabs STT ────────────────────
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -445,46 +486,76 @@ async function klStartMic() {
     alert('Mikrofon verweigert: ' + e.message);
     return;
   }
-  klAudioStream = stream;
-  klIsRecording = true;
+  klAudioStream   = stream;
+  klHadRealSpeech = false;
+  klIsRecording   = true;
   klUpdateMicUI();
   document.getElementById('kl-mic-status').classList.remove('hidden');
   window.speechSynthesis && window.speechSynthesis.cancel();
 
-  // ── Silence detection via AnalyserNode ────────────────────────
-  const actx     = new AudioContext();
-  const source   = actx.createMediaStreamSource(stream);
+  const actx = new AudioContext();
+  const src   = actx.createMediaStreamSource(stream);
   klAudioAnalyser = actx.createAnalyser();
   klAudioAnalyser.fftSize = 512;
-  source.connect(klAudioAnalyser);
+  src.connect(klAudioAnalyser);
   const buf = new Uint8Array(klAudioAnalyser.fftSize);
 
   function checkSilence() {
     if (!klIsRecording) return;
     klAudioAnalyser.getByteTimeDomainData(buf);
     const rms = Math.sqrt(buf.reduce((s,v) => s + (v-128)*(v-128), 0) / buf.length);
-    if (rms < 5) {                         // below threshold → silence
-      if (!klSilenceTimer) {
-        klSilenceTimer = setTimeout(() => {
-          if (klIsRecording) klFinishRecording();
-        }, 1400);                           // 1.4 s silence → done
-      }
+    if (rms >= KL_SPEECH_THRESHOLD) klHadRealSpeech = true;
+    if (rms < KL_SILENCE_THRESHOLD) {
+      if (!klSilenceTimer) klSilenceTimer = setTimeout(() => { if (klIsRecording) klFinishRecording(); }, 1400);
     } else {
-      clearTimeout(klSilenceTimer);
-      klSilenceTimer = null;
+      clearTimeout(klSilenceTimer); klSilenceTimer = null;
     }
     requestAnimationFrame(checkSilence);
   }
   requestAnimationFrame(checkSilence);
 
-  // ── MediaRecorder ─────────────────────────────────────────────
-  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-    ? 'audio/webm;codecs=opus' : 'audio/webm';
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
   klMediaRecorder = new MediaRecorder(stream, { mimeType });
   klAudioChunks   = [];
   klMediaRecorder.ondataavailable = e => { if (e.data.size > 0) klAudioChunks.push(e.data); };
   klMediaRecorder.onstop = klOnRecordingStop;
   klMediaRecorder.start(100);
+}
+
+// ── Web Speech API path ────────────────────────────────────────────
+function klStartWebSpeech() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { alert('Dein Browser unterstützt keine Spracheingabe. Bitte Chrome oder Edge nutzen.'); return; }
+
+  klIsRecording = true;
+  klUpdateMicUI();
+  document.getElementById('kl-mic-status').classList.remove('hidden');
+
+  klWebSpeechRec = new SR();
+  klWebSpeechRec.lang = 'de-DE';
+  klWebSpeechRec.interimResults = false;
+  klWebSpeechRec.maxAlternatives = 1;
+
+  klWebSpeechRec.onresult = e => {
+    const text = (e.results[0][0].transcript || '').trim();
+    klIsRecording = false;
+    klUpdateMicUI();
+    document.getElementById('kl-text-input').value = text;
+    if (text) klSend();
+    else if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+  };
+  klWebSpeechRec.onerror = () => {
+    klIsRecording = false;
+    klUpdateMicUI();
+    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 500);
+  };
+  klWebSpeechRec.onend = () => {
+    klIsRecording = false;
+    klUpdateMicUI();
+    // onend fires even without a result (e.g. too short) → restart if continuous
+    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+  };
+  klWebSpeechRec.start();
 }
 
 function klFinishRecording() {
@@ -497,28 +568,30 @@ function klFinishRecording() {
 }
 
 async function klOnRecordingStop() {
-  if (!klAudioChunks.length) {
+  if (!klAudioChunks.length || !klHadRealSpeech) {
+    klAudioChunks = []; klHadRealSpeech = false;
     if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
     return;
   }
   const blob = new Blob(klAudioChunks, { type: klMediaRecorder.mimeType });
-  klAudioChunks = [];
+  klAudioChunks = []; klHadRealSpeech = false;
 
   document.getElementById('kl-text-input').value = '…';
   try {
-    const resp = await fetch('/api/stt', {
-      method: 'POST',
-      headers: { 'Content-Type': blob.type },
-      body: blob
-    });
+    const resp = await fetch('/api/stt', { method: 'POST', headers: { 'Content-Type': blob.type }, body: blob });
     const data = await resp.json();
+    if (data.error === 'stt_unavailable') {
+      // ElevenLabs quota gone – switch permanently to Web Speech API
+      klSttMode = 'webspeech';
+      if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+      return;
+    }
     const text = (data.text || '').trim();
     document.getElementById('kl-text-input').value = text;
     if (text) klSend();
     else if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
   } catch(e) {
-    console.warn('STT error:', e);
-    document.getElementById('kl-text-input').value = '';
+    klSttMode = 'webspeech';
     if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
   }
 }
@@ -526,9 +599,8 @@ async function klOnRecordingStop() {
 function klStopMic() {
   clearTimeout(klSilenceTimer); klSilenceTimer = null;
   klIsRecording = false;
-  if (klMediaRecorder && klMediaRecorder.state !== 'inactive') {
-    try { klMediaRecorder.stop(); } catch(e) {}
-  }
+  if (klWebSpeechRec) { try { klWebSpeechRec.abort(); } catch(e) {} klWebSpeechRec = null; }
+  if (klMediaRecorder && klMediaRecorder.state !== 'inactive') { try { klMediaRecorder.stop(); } catch(e) {} }
   if (klAudioStream) { klAudioStream.getTracks().forEach(t => t.stop()); klAudioStream = null; }
   klMediaRecorder = null;
   klUpdateMicUI();

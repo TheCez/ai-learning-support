@@ -738,12 +738,14 @@ def tts_proxy():
 
 @app.route('/api/stt', methods=['POST'])
 def stt_proxy():
-    """Speech-to-text via ElevenLabs Scribe for user voice input."""
-    import json as _j, urllib.request, urllib.error
+    """Speech-to-text proxy.
 
-    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
-    if not api_key:
-        return _j.dumps({'error': 'ELEVENLABS_API_KEY not set'}), 503, {'Content-Type': 'application/json'}
+    Priority:
+      1. OpenAI Whisper  – best German accuracy, handles accents well (free tier)
+      2. ElevenLabs Scribe – if Whisper unavailable
+      3. Returns {'error': 'stt_unavailable'} → frontend falls back to Web Speech API
+    """
+    import json as _j, io
 
     audio_data = request.get_data()
     if not audio_data:
@@ -752,28 +754,48 @@ def stt_proxy():
     content_type = request.content_type or 'audio/webm'
     ext = 'webm' if 'webm' in content_type else 'mp3' if 'mp3' in content_type else 'webm'
 
-    boundary = 'el11boundary'
-    body = (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="model_id"\r\n\r\nscribe_v1\r\n'
-        f'--{boundary}\r\nContent-Disposition: form-data; name="language_code"\r\n\r\nde\r\n'
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.{ext}"\r\n'
-        f'Content-Type: {content_type}\r\n\r\n'
-    ).encode('utf-8') + audio_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
+    # ── 1. OpenAI Whisper ────────────────────────────────────────
+    openai_key = os.environ.get('OPENAI_API_KEY', '')
+    if openai_key:
+        try:
+            import openai as _oai
+            client = _oai.OpenAI(api_key=openai_key)
+            audio_file = io.BytesIO(audio_data)
+            audio_file.name = f'audio.{ext}'
+            result = client.audio.transcriptions.create(
+                model='whisper-1',
+                file=audio_file,
+                language='de',
+                response_format='text',
+            )
+            text = result.strip() if isinstance(result, str) else (result.text or '').strip()
+            return _j.dumps({'text': text}), 200, {'Content-Type': 'application/json'}
+        except Exception:
+            pass  # fall through to ElevenLabs
 
-    req = urllib.request.Request('https://api.elevenlabs.io/v1/speech-to-text', data=body, method='POST')
-    req.add_header('xi-api-key', api_key)
-    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+    # ── 2. ElevenLabs Scribe ─────────────────────────────────────
+    import urllib.request, urllib.error
+    el_key = os.environ.get('ELEVENLABS_API_KEY', '')
+    if el_key:
+        boundary = 'el11boundary'
+        body = (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="model_id"\r\n\r\nscribe_v1\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="language_code"\r\n\r\nde\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.{ext}"\r\n'
+            f'Content-Type: {content_type}\r\n\r\n'
+        ).encode('utf-8') + audio_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
+        req = urllib.request.Request('https://api.elevenlabs.io/v1/speech-to-text', data=body, method='POST')
+        req.add_header('xi-api-key', el_key)
+        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                result = _j.loads(r.read())
+                return _j.dumps({'text': result.get('text', '')}), 200, {'Content-Type': 'application/json'}
+        except Exception:
+            pass  # fall through
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = _j.loads(r.read())
-            return _j.dumps({'text': result.get('text', '')}), 200, {'Content-Type': 'application/json'}
-    except urllib.error.HTTPError as e:
-        body = e.read()
-        # Return a structured error so the frontend can fall back gracefully
-        return _j.dumps({'error': f'stt_unavailable', 'status': e.code}), 200, {'Content-Type': 'application/json'}
-    except Exception as e:
-        return _j.dumps({'error': 'stt_unavailable'}), 200, {'Content-Type': 'application/json'}
+    # ── 3. No STT available → browser Web Speech API fallback ────
+    return _j.dumps({'error': 'stt_unavailable'}), 200, {'Content-Type': 'application/json'}
 
 
 @app.route('/debug-env')
@@ -782,12 +804,19 @@ def debug_env():
     lines = [
         f"Python: {sys.executable}",
         f"GOOGLE_API_KEY gesetzt: {bool(os.environ.get('GOOGLE_API_KEY'))}",
+        f"ELEVENLABS_API_KEY gesetzt: {bool(os.environ.get('ELEVENLABS_API_KEY'))}",
+        f"OPENAI_API_KEY gesetzt: {bool(os.environ.get('OPENAI_API_KEY'))}",
     ]
     try:
         from google import genai
         lines.append(f"google-genai: OK (v{genai.__version__})")
     except Exception as e:
         lines.append(f"google-genai Import-Fehler: {type(e).__name__}: {e}")
+    try:
+        import openai as _oai
+        lines.append(f"openai: OK (v{_oai.__version__})")
+    except Exception as e:
+        lines.append(f"openai Import-Fehler: {type(e).__name__}: {e}")
     return "<br>".join(lines)
 
 

@@ -1,12 +1,22 @@
 import os
 from models import db, User, Course, Module, QuizQuestion
 
-try:
-    from google import genai
-    from google.genai import types as genai_types
-    _GEMINI_AVAILABLE = True
-except ImportError:
-    _GEMINI_AVAILABLE = False
+genai = None
+genai_types = None
+
+def _load_gemini():
+    """Importiert google-genai lazy – funktioniert auch nach nachträglicher Installation."""
+    global genai, genai_types
+    if genai is not None:
+        return True
+    try:
+        from google import genai as _genai
+        from google.genai import types as _types
+        genai = _genai
+        genai_types = _types
+        return True
+    except ImportError:
+        return False
 
 LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1']
 
@@ -255,7 +265,7 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
             f"Um die echte KI-Professorin zu nutzen, setze GOOGLE_API_KEY in der .env-Datei."
         )
 
-    if not _GEMINI_AVAILABLE:
+    if not _load_gemini():
         return (
             "Professor KI: Das Paket google-genai ist nicht installiert.\n"
             "Bitte führe aus: pip install google-genai"
@@ -298,7 +308,7 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
         contents = f"Erkläre mir bitte: {topic}"
 
         # Versuche Modelle in Reihenfolge (Fallback bei Kontingent-Limit)
-        for model in ('gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash'):
+        for model in ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'):
             try:
                 response = client.models.generate_content(
                     model=model,

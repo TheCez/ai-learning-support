@@ -420,45 +420,56 @@ def student_progress(user):
 
 
 # ── KI-Professorin ─────────────────────────────
-@app.route('/ai-professor', methods=['GET', 'POST'])
+@app.route('/ai-professor', methods=['GET'])
 @login_required(role='student')
 def ai_professor(user):
-    response = None
-    topic = ''
-    selected_course_id = None
-
-    # Alle eingeschriebenen Kurse des Schülers laden
     enrolled_courses = [e.course for e in user.enrollments]
-
-    if request.method == 'POST':
-        topic = request.form.get('topic', '').strip()
-        selected_course_id = request.form.get('course_id', type=int)
-
-        if topic:
-            # Kurskontext aufbauen: Titel, Zusammenfassung und alle Modulinhalte
-            course_context = ''
-            if selected_course_id:
-                course = Course.query.get(selected_course_id)
-                if course and any(e.course_id == selected_course_id for e in user.enrollments):
-                    parts = [f"Kurs: {course.title}\n{course.summary}\n"]
-                    for module in course.modules:
-                        parts.append(f"Modul: {module.title}\n{module.description}")
-                        if module.content:
-                            parts.append(module.content)
-                    course_context = '\n\n'.join(parts)
-
-            response = get_ai_professor_response(topic, user.language_level, course_context)
-        else:
-            flash('Bitte gib ein Thema ein.', 'warning')
-
     return render_template(
         'ai_professor.html',
-        response=response,
-        topic=topic,
         user=user,
         enrolled_courses=enrolled_courses,
-        selected_course_id=selected_course_id,
     )
+
+
+@app.route('/api/ai-professor', methods=['POST'])
+@login_required(role='student')
+def ai_professor_api(user):
+    from flask import jsonify
+    data = request.get_json(silent=True) or {}
+    topic = data.get('topic', '').strip()
+    selected_course_id = data.get('course_id')
+
+    if not topic:
+        return jsonify({'error': 'Kein Thema angegeben.'}), 400
+
+    course_context = ''
+    if selected_course_id:
+        course = Course.query.get(selected_course_id)
+        if course and any(e.course_id == selected_course_id for e in user.enrollments):
+            parts = [f"Kurs: {course.title}\n{course.summary}"]
+            for module in course.modules:
+                parts.append(f"Modul: {module.title}\n{module.description}")
+                if module.content:
+                    parts.append(module.content)
+            course_context = '\n\n'.join(parts)
+
+    response_text = get_ai_professor_response(topic, user.language_level, course_context)
+    return jsonify({'response': response_text})
+
+
+@app.route('/debug-env')
+def debug_env():
+    import sys
+    lines = [
+        f"Python: {sys.executable}",
+        f"GOOGLE_API_KEY gesetzt: {bool(os.environ.get('GOOGLE_API_KEY'))}",
+    ]
+    try:
+        from google import genai
+        lines.append(f"google-genai: OK (v{genai.__version__})")
+    except Exception as e:
+        lines.append(f"google-genai Import-Fehler: {type(e).__name__}: {e}")
+    return "<br>".join(lines)
 
 
 if __name__ == '__main__':

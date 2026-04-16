@@ -1,77 +1,261 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="panel">
+<div class="panel ki-panel">
+
   <div class="ki-header">
-    <div class="ki-avatar">🎓</div>
+    <div class="ki-avatar-lg">🎓</div>
     <div>
       <h1>KI-Professorin</h1>
-      <p class="meta">Dein Sprachniveau: <strong>{{ user.language_level }}</strong> – Ich erkläre alles passend für dich.</p>
+      <p class="meta">Sprachniveau: <strong>{{ user.language_level }}</strong> – Ich erkläre alles passend für dich.</p>
+    </div>
+    <div class="ki-voice-toggle" title="Automatische Sprachausgabe">
+      <label class="toggle-label">
+        <input type="checkbox" id="auto-speak-toggle" checked>
+        <span class="toggle-track"></span>
+        <span class="toggle-text">Sprachausgabe</span>
+      </label>
     </div>
   </div>
 
-  <form method="post" id="ki-form">
-
-    {% if enrolled_courses %}
-    <div class="course-context-row">
-      <label for="course-select">Kurs als Kontext wählen <span class="meta">(optional)</span></label>
-      <select id="course-select" name="course_id">
-        <option value="">– Kein Kurs (allgemeines Pflegewissen) –</option>
-        {% for course in enrolled_courses %}
-          <option value="{{ course.id }}" {% if selected_course_id == course.id %}selected{% endif %}>
-            {{ course.title }} (Niveau {{ course.recommended_level }})
-          </option>
-        {% endfor %}
-      </select>
-      <p class="meta course-context-hint">Wenn du einen Kurs wählst, bezieht sich die KI-Professorin auf die Lerninhalte dieses Kurses.</p>
-    </div>
-    {% endif %}
-
-    <div class="topic-suggestions">
-      <p><strong>Themenvorschläge:</strong></p>
-      <div class="chip-row">
-        <button type="button" class="chip" onclick="setTopic('Vitalzeichen messen')">Vitalzeichen messen</button>
-        <button type="button" class="chip" onclick="setTopic('Händehygiene')">Händehygiene</button>
-        <button type="button" class="chip" onclick="setTopic('Dekubitus Prävention')">Dekubitus</button>
-        <button type="button" class="chip" onclick="setTopic('Medikamentengabe')">Medikamentengabe</button>
-        <button type="button" class="chip" onclick="setTopic('Wundversorgung')">Wundversorgung</button>
-        <button type="button" class="chip" onclick="setTopic('Sturzprävention')">Sturzprävention</button>
-        <button type="button" class="chip" onclick="setTopic('Pflegedokumentation')">Dokumentation</button>
-        <button type="button" class="chip" onclick="setTopic('Dehydratation erkennen')">Dehydratation</button>
-      </div>
-    </div>
-
-    <label for="topic-input">Deine Frage oder Thema:</label>
-    <div class="input-row">
-      <input id="topic-input" type="text" name="topic" value="{{ topic }}"
-             placeholder="z. B. Wie messe ich den Blutdruck richtig?" required>
-      <button class="button" type="submit">Fragen</button>
-    </div>
-  </form>
-
-  {% if response %}
-  <div class="ai-response">
-    <div class="ai-response-header">
-      <span class="ai-avatar">🎓</span>
-      <strong>Professor KI antwortet:</strong>
-      {% if selected_course_id %}
-        {% for course in enrolled_courses %}
-          {% if course.id == selected_course_id %}
-            <span class="badge badge-info" style="margin-left:8px">Kontext: {{ course.title }}</span>
-          {% endif %}
-        {% endfor %}
-      {% endif %}
-    </div>
-    <div class="ai-response-body">
-      {{ response | replace('\n', '<br>') | safe }}
-    </div>
+  {% if enrolled_courses %}
+  <div class="course-context-row">
+    <label for="course-select">Kurs als Kontext <span class="meta">(optional)</span></label>
+    <select id="course-select">
+      <option value="">– Allgemeines Pflegewissen –</option>
+      {% for course in enrolled_courses %}
+        <option value="{{ course.id }}">{{ course.title }} ({{ course.recommended_level }})</option>
+      {% endfor %}
+    </select>
   </div>
   {% endif %}
+
+  <div class="topic-suggestions">
+    <p><strong>Themenvorschläge:</strong></p>
+    <div class="chip-row">
+      <button type="button" class="chip" onclick="setTopic('Vitalzeichen messen')">Vitalzeichen messen</button>
+      <button type="button" class="chip" onclick="setTopic('Händehygiene')">Händehygiene</button>
+      <button type="button" class="chip" onclick="setTopic('Dekubitus Prävention')">Dekubitus</button>
+      <button type="button" class="chip" onclick="setTopic('Medikamentengabe')">Medikamentengabe</button>
+      <button type="button" class="chip" onclick="setTopic('Wundversorgung')">Wundversorgung</button>
+      <button type="button" class="chip" onclick="setTopic('Sturzprävention')">Sturzprävention</button>
+      <button type="button" class="chip" onclick="setTopic('Pflegedokumentation')">Dokumentation</button>
+      <button type="button" class="chip" onclick="setTopic('Dehydratation erkennen')">Dehydratation</button>
+    </div>
+  </div>
+
+  <div class="ki-input-area">
+    <label for="topic-input">Deine Frage oder Thema:</label>
+    <div class="input-row">
+      <input id="topic-input" type="text" placeholder="z. B. Wie messe ich den Blutdruck richtig?">
+      <button id="mic-btn" class="button button-mic" title="Sprachaufnahme starten" onclick="toggleMic()">
+        🎤
+      </button>
+      <button id="send-btn" class="button" onclick="sendQuestion()">Fragen</button>
+    </div>
+    <div id="mic-status" class="mic-status hidden">🎙️ Höre zu …</div>
+  </div>
+
+  <div id="response-area" class="hidden">
+    <div class="ai-response">
+      <div class="ai-response-header">
+        <span class="ai-avatar">🎓</span>
+        <strong>Professor KI antwortet:</strong>
+        <span id="context-badge" class="badge badge-info" style="margin-left:8px;display:none"></span>
+        <button id="speak-btn" class="button button-sm button-secondary" style="margin-left:auto" onclick="speakResponse()" title="Antwort vorlesen">
+          🔊 Vorlesen
+        </button>
+        <button class="button button-sm button-secondary" onclick="stopSpeech()" title="Vorlesen stoppen">
+          ⏹
+        </button>
+      </div>
+      <div id="response-text" class="ai-response-body"></div>
+    </div>
+  </div>
+
+  <div id="loading-area" class="hidden">
+    <div class="ki-loading">
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+      <p>Professor KI denkt nach …</p>
+    </div>
+  </div>
+
 </div>
 
 <script>
+// ── Konfiguration ──────────────────────────────
+let recognition = null;
+let isRecording = false;
+let currentResponseText = '';
+
+// ── Themenvorschlag setzen ─────────────────────
 function setTopic(text) {
   document.getElementById('topic-input').value = text;
-  document.getElementById('ki-form').submit();
+  sendQuestion();
 }
+
+// ── Frage absenden (AJAX) ──────────────────────
+function sendQuestion() {
+  const topic = document.getElementById('topic-input').value.trim();
+  if (!topic) {
+    document.getElementById('topic-input').focus();
+    return;
+  }
+
+  const courseId = document.getElementById('course-select')
+    ? document.getElementById('course-select').value
+    : null;
+
+  // UI: Loading anzeigen
+  document.getElementById('response-area').classList.add('hidden');
+  document.getElementById('loading-area').classList.remove('hidden');
+  document.getElementById('send-btn').disabled = true;
+
+  fetch('/api/ai-professor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic: topic, course_id: courseId ? parseInt(courseId) : null }),
+  })
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('loading-area').classList.add('hidden');
+    document.getElementById('send-btn').disabled = false;
+
+    if (data.error) {
+      showResponse('Fehler: ' + data.error);
+      return;
+    }
+
+    // Kurs-Badge
+    const badge = document.getElementById('context-badge');
+    const select = document.getElementById('course-select');
+    if (select && select.value) {
+      badge.textContent = 'Kontext: ' + select.options[select.selectedIndex].text.split(' (')[0];
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+
+    currentResponseText = data.response;
+    showResponse(data.response);
+
+    // Automatische Sprachausgabe wenn aktiviert
+    if (document.getElementById('auto-speak-toggle').checked) {
+      speakResponse();
+    }
+  })
+  .catch(err => {
+    document.getElementById('loading-area').classList.add('hidden');
+    document.getElementById('send-btn').disabled = false;
+    showResponse('Verbindungsfehler: ' + err.message);
+  });
+}
+
+function showResponse(text) {
+  const el = document.getElementById('response-text');
+  el.innerHTML = text.replace(/\n/g, '<br>');
+  document.getElementById('response-area').classList.remove('hidden');
+}
+
+// ── Spracheingabe (Mikrofon) ───────────────────
+function toggleMic() {
+  if (isRecording) {
+    stopMic();
+  } else {
+    startMic();
+  }
+}
+
+function startMic() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    alert('Spracherkennung wird von diesem Browser nicht unterstützt.\nBitte nutze Chrome oder Edge.');
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.lang = 'de-DE';
+  recognition.interimResults = true;
+  recognition.continuous = false;
+
+  recognition.onstart = () => {
+    isRecording = true;
+    document.getElementById('mic-btn').textContent = '⏹';
+    document.getElementById('mic-btn').classList.add('recording');
+    document.getElementById('mic-status').classList.remove('hidden');
+  };
+
+  recognition.onresult = (event) => {
+    const transcript = Array.from(event.results)
+      .map(r => r[0].transcript)
+      .join('');
+    document.getElementById('topic-input').value = transcript;
+
+    // Bei finalem Ergebnis automatisch absenden
+    if (event.results[event.results.length - 1].isFinal) {
+      stopMic();
+      sendQuestion();
+    }
+  };
+
+  recognition.onerror = (event) => {
+    stopMic();
+    if (event.error === 'not-allowed') {
+      alert('Mikrofon-Zugriff wurde verweigert.\nBitte erlaube den Mikrofon-Zugriff in den Browser-Einstellungen.');
+    }
+  };
+
+  recognition.onend = () => stopMic();
+
+  recognition.start();
+}
+
+function stopMic() {
+  isRecording = false;
+  if (recognition) { recognition.stop(); recognition = null; }
+  document.getElementById('mic-btn').textContent = '🎤';
+  document.getElementById('mic-btn').classList.remove('recording');
+  document.getElementById('mic-status').classList.add('hidden');
+}
+
+// ── Sprachausgabe (Text-to-Speech) ────────────
+function speakResponse() {
+  if (!currentResponseText) return;
+  if (!window.speechSynthesis) {
+    alert('Sprachausgabe wird von diesem Browser nicht unterstützt.');
+    return;
+  }
+  stopSpeech();
+  const utterance = new SpeechSynthesisUtterance(currentResponseText);
+  utterance.lang = 'de-DE';
+  utterance.rate = 0.95;
+  utterance.pitch = 1.0;
+
+  // Deutsche Stimme bevorzugen
+  const voices = window.speechSynthesis.getVoices();
+  const germanVoice = voices.find(v => v.lang.startsWith('de') && !v.name.includes('Google'))
+    || voices.find(v => v.lang.startsWith('de'));
+  if (germanVoice) utterance.voice = germanVoice;
+
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopSpeech() {
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+// Stimmen laden (asynchron in manchen Browsern)
+if (window.speechSynthesis) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', () => {
+    window.speechSynthesis.getVoices();
+  });
+}
+
+// Enter-Taste im Textfeld
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('topic-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendQuestion();
+  });
+});
 </script>
 {% endblock %}

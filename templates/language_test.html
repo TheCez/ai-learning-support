@@ -1,20 +1,31 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>Sprachtest</h1>
+  <div class="test-header">
+    <h1>Sprachtest Deutsch</h1>
+    <p class="test-intro">Dieser Test bewertet dein Deutschniveau im pflegerischen Kontext. Beantworte alle Fragen so gut du kannst – es gibt kein Richtig oder Falsch für deinen Lernweg.</p>
+    <div class="test-meta">
+      <span class="badge">{{ questions|length }} Fragen</span>
+      <span class="badge badge-info">GER-Niveau A1–C1</span>
+    </div>
+  </div>
   <form method="post">
     {% for question in questions %}
+      {% set q_idx = loop.index0 %}
       <div class="question-block">
-        <p><strong>{{ loop.index }}. {{ question.question }}</strong></p>
+        <div class="question-counter">Frage {{ loop.index }} / {{ questions|length }}</div>
+        <p class="question-text"><strong>{{ question.question }}</strong></p>
         {% for option in question.choices %}
           <label class="option-label">
-            <input type="radio" name="question_{{ loop.index0 }}" value="{{ option }}" required>
-            {{ option }}
+            <input type="radio" name="question_{{ q_idx }}" value="{{ option }}" required>
+            <span>{{ option }}</span>
           </label>
         {% endfor %}
       </div>
     {% endfor %}
-    <button class="button" type="submit">Auswerten</button>
+    <div class="form-actions">
+      <button class="button" type="submit">Test auswerten</button>
+    </div>
   </form>
 </div>
 {% endblock %}

@@ -3,20 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>careLearn</title>
+  <title>careLearn – Pflegeausbildung</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div><a href="{{ url_for('index') }}">careLearn</a></div>
-      <nav>
+      <a class="topbar-brand" href="{{ url_for('index') }}">careLearn</a>
+      <nav class="topbar-nav">
         {% if current_user %}
-          <span>{{ current_user.full_name() }} ({{ current_user.role }})</span>
-          <a href="{{ url_for('logout') }}">Abmelden</a>
+          {% if current_user.role == 'student' %}
+            <a href="{{ url_for('student_dashboard') }}">Dashboard</a>
+            <a href="{{ url_for('courses') }}">Kurse</a>
+            <a href="{{ url_for('ai_professor') }}">KI-Professorin</a>
+          {% else %}
+            <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a>
+            <a href="{{ url_for('create_course') }}">Kurs erstellen</a>
+            <a href="{{ url_for('student_progress') }}">Schüler-Fortschritt</a>
+          {% endif %}
+          <span class="topbar-user">{{ current_user.first_name }}</span>
+          <a class="button button-sm button-secondary" href="{{ url_for('logout') }}">Abmelden</a>
         {% else %}
-          <a href="{{ url_for('login') }}">Login</a>
-          <a href="{{ url_for('register') }}">Registrieren</a>
+          <a href="{{ url_for('login') }}">Anmelden</a>
+          <a class="button button-sm" href="{{ url_for('register') }}">Registrieren</a>
         {% endif %}
       </nav>
     </header>
@@ -33,6 +42,10 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
+
+    <footer class="site-footer">
+      <p>careLearn &copy; 2025 – Digitale Lernplattform für Pflegeausbildung</p>
+    </footer>
   </div>
 </body>
 </html>

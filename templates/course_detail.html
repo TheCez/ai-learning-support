@@ -1,23 +1,58 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>{{ course.title }}</h1>
+  <div class="breadcrumb">
+    <a href="{{ url_for('student_dashboard') }}">Dashboard</a> &rsaquo;
+    <a href="{{ url_for('courses') }}">Alle Kurse</a> &rsaquo;
+    {{ course.title }}
+  </div>
+
+  <div class="card-header-row">
+    <div>
+      <h1>{{ course.title }}</h1>
+      <div class="meta-row">
+        <span class="badge">Niveau {{ course.recommended_level }}</span>
+        <span class="badge">{{ course.modules|length }} Module</span>
+      </div>
+    </div>
+    {% if enrolled %}
+      <span class="badge badge-info">Eingeschrieben</span>
+    {% else %}
+      <a class="button" href="{{ url_for('enroll_course', course_id=course.id) }}">Jetzt einschreiben</a>
+    {% endif %}
+  </div>
+
   <p>{{ course.summary }}</p>
-  <p>Empfohlenes Niveau: <strong>{{ course.recommended_level }}</strong></p>
-  {% if enrolled %}
-    <div class="badge">eingeschrieben</div>
-  {% else %}
-    <a class="button" href="{{ url_for('enroll_course', course_id=course.id) }}">Jetzt einschreiben</a>
-  {% endif %}
-  <section class="module-list">
+
+  <section>
     <h2>Module</h2>
-    {% for module in course.modules %}
-      <article class="module-card">
-        <h3>{{ module.title }}</h3>
-        <p>{{ module.description }}</p>
-        <a class="button button-secondary" href="{{ url_for('course_module', course_id=course.id, module_id=module.id) }}">Ansehen</a>
-      </article>
-    {% endfor %}
+    {% if course.modules %}
+      <div class="module-list">
+        {% for module in course.modules %}
+          <article class="module-card">
+            <div class="module-card-header">
+              <div>
+                <h3>{{ loop.index }}. {{ module.title }}</h3>
+                <p>{{ module.description }}</p>
+              </div>
+              <div>
+                <span class="badge">{{ module.module_type }}</span>
+                {% if module.module_type == 'quiz' %}
+                  <div class="meta">{{ module.quiz_questions|length }} Fragen</div>
+                {% endif %}
+              </div>
+            </div>
+            {% if enrolled %}
+              <a class="button button-sm button-secondary" href="{{ url_for('course_module', course_id=course.id, module_id=module.id) }}">Modul öffnen</a>
+            {% else %}
+              <p class="meta">Melde dich an, um dieses Modul zu bearbeiten.</p>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="empty-hint">Dieser Kurs hat noch keine Module.</p>
+    {% endif %}
   </section>
 </div>
 {% endblock %}

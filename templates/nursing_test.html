@@ -1,29 +1,40 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>Pflegewissen-Test</h1>
+  <div class="test-header">
+    <h1>Pflegewissen-Test</h1>
+    <p class="test-intro">Dieser Test erfasst dein pflegerisches Vorwissen. Bei Fragen mit mehreren richtigen Antworten sind alle richtigen Antworten anzukreuzen.</p>
+    <div class="test-meta">
+      <span class="badge">{{ questions|length }} Fragen</span>
+      <span class="badge badge-warning">Manche Fragen haben mehrere richtige Antworten</span>
+    </div>
+  </div>
   <form method="post">
     {% for question in questions %}
+      {% set q_idx = loop.index0 %}
       <div class="question-block">
-        <p><strong>{{ loop.index }}. {{ question.question }}</strong></p>
+        <div class="question-counter">Frage {{ loop.index }} / {{ questions|length }}{% if question.multi %} <span class="multi-hint">(Mehrfachauswahl möglich)</span>{% endif %}</div>
+        <p class="question-text"><strong>{{ question.question }}</strong></p>
         {% if question.multi %}
           {% for option in question.choices %}
             <label class="option-label">
-              <input type="checkbox" name="question_{{ loop.index0 }}" value="{{ option }}">
-              {{ option }}
+              <input type="checkbox" name="question_{{ q_idx }}" value="{{ option }}">
+              <span>{{ option }}</span>
             </label>
           {% endfor %}
         {% else %}
           {% for option in question.choices %}
             <label class="option-label">
-              <input type="radio" name="question_{{ loop.index0 }}" value="{{ option }}" required>
-              {{ option }}
+              <input type="radio" name="question_{{ q_idx }}" value="{{ option }}" required>
+              <span>{{ option }}</span>
             </label>
           {% endfor %}
         {% endif %}
       </div>
     {% endfor %}
-    <button class="button" type="submit">Auswerten</button>
+    <div class="form-actions">
+      <button class="button" type="submit">Test auswerten</button>
+    </div>
   </form>
 </div>
 {% endblock %}

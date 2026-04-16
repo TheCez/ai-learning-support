@@ -1,47 +1,70 @@
 {% extends 'base.html' %}
 {% block content %}
+
 <div class="grid-two">
   <section class="card">
     <h2>Lehrer-Dashboard</h2>
-    <p>Hier siehst du deine Kurse und den Fortschritt deiner Schüler.</p>
-    <a class="button" href="{{ url_for('create_course') }}">Neuen Kurs anlegen</a>
-    <a class="button button-secondary" href="{{ url_for('student_progress') }}">Schüler-Fortschritt</a>
+    <p>Hallo {{ user.first_name }}! Hier verwaltest du deine Kurse und siehst den Lernfortschritt deiner Schülerinnen und Schüler.</p>
+    <div class="actions-row" style="margin-top:16px">
+      <a class="button" href="{{ url_for('create_course') }}">Neuen Kurs erstellen</a>
+      <a class="button button-secondary" href="{{ url_for('student_progress') }}">Schüler-Fortschritt</a>
+    </div>
   </section>
 
   <section class="card">
-    <h2>Meine Kurse</h2>
+    <div class="card-header-row">
+      <h2>Meine Kurse</h2>
+      <span class="badge">{{ courses|length }} Kurse</span>
+    </div>
     {% if courses %}
       <ul class="list">
         {% for course in courses %}
-          <li>{{ course.title }} (<small>{{ course.recommended_level }}</small>)</li>
+          <li class="course-list-item">
+            <div>
+              <a href="{{ url_for('teacher_course', course_id=course.id) }}"><strong>{{ course.title }}</strong></a>
+              <small class="meta"> · Niveau {{ course.recommended_level }} · {{ course.modules|length }} Module</small>
+            </div>
+            <a class="button button-sm button-secondary" href="{{ url_for('teacher_course', course_id=course.id) }}">Verwalten</a>
+          </li>
         {% endfor %}
       </ul>
     {% else %}
-      <p>Du hast noch keinen Kurs erstellt.</p>
+      <p class="empty-hint">Du hast noch keinen Kurs erstellt.</p>
+      <a class="button button-sm" href="{{ url_for('create_course') }}">Ersten Kurs erstellen</a>
     {% endif %}
   </section>
 </div>
 
 <section class="card">
-  <h2>Aktive Einschreibungen</h2>
+  <div class="card-header-row">
+    <h2>Aktive Einschreibungen</h2>
+    <span class="badge">{{ enrollments|length }} Schüler</span>
+  </div>
   {% if enrollments %}
     <table class="table">
       <thead>
-        <tr><th>Schüler/in</th><th>Kurs</th><th>Module</th><th>Datum</th></tr>
+        <tr>
+          <th>Schüler/in</th>
+          <th>Deutschniveau</th>
+          <th>Kurs</th>
+          <th>Module abgeschlossen</th>
+          <th>Eingeschrieben am</th>
+        </tr>
       </thead>
       <tbody>
         {% for enrollment in enrollments %}
           <tr>
             <td>{{ enrollment.student.full_name() }}</td>
+            <td><span class="badge">{{ enrollment.student.language_level }}</span></td>
             <td>{{ enrollment.course.title }}</td>
-            <td>{{ enrollment.completed_modules }}</td>
+            <td>{{ enrollment.completed_modules }} / {{ enrollment.course.modules|length }}</td>
             <td>{{ enrollment.enrolled_at.strftime('%d.%m.%Y') }}</td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
   {% else %}
-    <p>Noch keine Einschreibungen vorhanden.</p>
+    <p class="empty-hint">Noch keine Einschreibungen vorhanden.</p>
   {% endif %}
 </section>
 {% endblock %}

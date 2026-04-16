@@ -2,16 +2,42 @@
 {% block content %}
 <div class="panel">
   <h1>Quiz-Ergebnis</h1>
-  <p>Du hast {{ score }} von {{ module.quiz_questions|length }} Punkten erreicht.</p>
-  <section>
+
+  <div class="result-summary">
+    <div class="result-score {% if pct >= 80 %}score-good{% elif pct >= 50 %}score-ok{% else %}score-low{% endif %}">
+      {{ score }}/{{ total }}
+    </div>
+    <div class="result-info">
+      <p class="result-pct">{{ pct }}% richtig</p>
+      {% if pct == 100 %}
+        <p>Perfekt! Alle Fragen richtig beantwortet.</p>
+      {% elif pct >= 80 %}
+        <p>Sehr gut! Du hast das Thema gut verstanden.</p>
+      {% elif pct >= 50 %}
+        <p>Gut gemacht! Schau dir die falschen Antworten noch einmal an.</p>
+      {% else %}
+        <p>Weiter üben! Lies dir den Modulinhalt noch einmal durch.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <section class="answer-review">
+    <h2>Antworten im Detail</h2>
     {% for answer in answers %}
-      <div class="question-block">
+      <div class="question-block {{ 'correct' if answer.is_correct else 'wrong' }}">
+        <div class="answer-status">{{ '✓' if answer.is_correct else '✗' }}</div>
         <p><strong>{{ loop.index }}. {{ answer.question }}</strong></p>
-        <p>Deine Antwort: {{ answer.selected|join(', ') }}</p>
-        <p>Richtige Antwort: {{ answer.correct|join(', ') }}</p>
+        <p>Deine Antwort: <em>{{ answer.selected|join(', ') or '(keine Angabe)' }}</em></p>
+        {% if not answer.is_correct %}
+        <p class="correct-hint">Richtige Antwort: <strong>{{ answer.correct|join(', ') }}</strong></p>
+        {% endif %}
       </div>
     {% endfor %}
   </section>
-  <a class="button" href="{{ url_for('student_dashboard') }}">Zurück zum Dashboard</a>
+
+  <div class="actions-row">
+    <a class="button" href="{{ url_for('course_module', course_id=course_id, module_id=module.id) }}">Modul erneut ansehen</a>
+    <a class="button button-secondary" href="{{ url_for('student_dashboard') }}">Zum Dashboard</a>
+  </div>
 </div>
 {% endblock %}

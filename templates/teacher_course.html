@@ -1,0 +1,114 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<div class="breadcrumb">
+  <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a> &rsaquo; {{ course.title }}
+</div>
+
+<div class="grid-two">
+  <section class="card">
+    <h1>{{ course.title }}</h1>
+    <p>{{ course.summary }}</p>
+    <div class="meta-row">
+      <span class="badge">Niveau {{ course.recommended_level }}</span>
+      <span class="badge">{{ course.modules|length }} Module</span>
+      <span class="badge">{{ enrollments|length }} Schüler</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Neues Modul hinzufügen</h2>
+    <form method="post" action="{{ url_for('add_module', course_id=course.id) }}">
+      <label>Modultitel</label>
+      <input type="text" name="module_title" required placeholder="z. B. Blutdruckmessung">
+      <label>Beschreibung</label>
+      <textarea name="module_description" rows="2" required placeholder="Kurze Beschreibung des Moduls"></textarea>
+      <label>Modultyp</label>
+      <select name="module_type">
+        <option value="quiz">Quiz</option>
+        <option value="reading">Leseinhalt</option>
+        <option value="audio">Audio</option>
+      </select>
+      <label>Inhalt / Text</label>
+      <textarea name="content_body" rows="4" placeholder="Lerninhalt oder Erklärungstext"></textarea>
+      <button class="button" type="submit" style="margin-top:8px">Modul speichern</button>
+    </form>
+  </section>
+</div>
+
+{% for module in course.modules %}
+<section class="card">
+  <div class="card-header-row">
+    <div>
+      <h2>{{ loop.index }}. {{ module.title }}</h2>
+      <span class="badge">{{ module.module_type }}</span>
+      <span class="meta"> · {{ module.quiz_questions|length }} Fragen</span>
+    </div>
+  </div>
+
+  {% if module.content %}
+  <div class="module-content-preview">
+    <p>{{ module.content[:300] }}{% if module.content|length > 300 %}…{% endif %}</p>
+  </div>
+  {% endif %}
+
+  {% if module.module_type == 'quiz' %}
+  <div class="quiz-section">
+    <h3>Quiz-Fragen</h3>
+
+    {% if module.quiz_questions %}
+    <table class="table" style="margin-bottom:16px">
+      <thead>
+        <tr><th>#</th><th>Frage</th><th>Typ</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for q in module.quiz_questions %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ q.question }}</td>
+          <td>{{ 'Mehrfach' if q.multi_choice else 'Einfach' }}</td>
+          <td>
+            <form method="post" action="{{ url_for('delete_quiz_question', course_id=course.id, module_id=module.id, question_id=q.id) }}" style="display:inline" onsubmit="return confirm('Frage wirklich löschen?')">
+              <button class="button button-sm button-danger" type="submit">Löschen</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-hint">Noch keine Fragen vorhanden.</p>
+    {% endif %}
+
+    <details class="add-question-form">
+      <summary class="button button-sm button-secondary">+ Neue Frage hinzufügen</summary>
+      <div class="form-inner" style="margin-top:12px">
+        <form method="post" action="{{ url_for('add_quiz_question', course_id=course.id, module_id=module.id) }}">
+          <label>Fragetext</label>
+          <input type="text" name="question" required placeholder="z. B. Was ist ein normaler Puls?">
+
+          <label>Antwortmöglichkeiten <small>(eine pro Zeile)</small></label>
+          <textarea name="options" rows="4" required placeholder="60–100 / min&#10;40–59 / min&#10;100–140 / min&#10;> 140 / min"></textarea>
+
+          <label>Richtige Antwort(en) <small>(bei mehreren: genau wie oben, mit Semikolon getrennt)</small></label>
+          <input type="text" name="answer" required placeholder="60–100 / min">
+
+          <label class="option-label" style="margin-top:8px">
+            <input type="checkbox" name="multi_choice">
+            <span>Mehrfachauswahl möglich</span>
+          </label>
+
+          <button class="button" type="submit" style="margin-top:8px">Frage speichern</button>
+        </form>
+      </div>
+    </details>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<div class="card">
+  <p class="empty-hint">Dieser Kurs hat noch keine Module. Füge oben das erste Modul hinzu.</p>
+</div>
+{% endfor %}
+
+{% endblock %}

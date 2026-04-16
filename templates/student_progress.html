@@ -1,25 +1,47 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
+  <div class="breadcrumb">
+    <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a> &rsaquo; Schüler-Fortschritt
+  </div>
   <h1>Schüler-Fortschritt</h1>
-  {% if enrollments %}
+
+  {% if details %}
     <table class="table">
       <thead>
-        <tr><th>Schüler/in</th><th>Kurs</th><th>Die Module</th><th>Einschreibung</th></tr>
+        <tr>
+          <th>Schüler/in</th>
+          <th>Herkunft</th>
+          <th>Deutschniveau</th>
+          <th>Pflegewissen</th>
+          <th>Kurs</th>
+          <th>Fortschritt</th>
+          <th>Quiz-Versuche</th>
+          <th>Eingeschrieben</th>
+        </tr>
       </thead>
       <tbody>
-        {% for enrollment in enrollments %}
-          <tr>
-            <td>{{ enrollment.student.full_name() }}</td>
-            <td>{{ enrollment.course.title }}</td>
-            <td>{{ enrollment.completed_modules }}</td>
-            <td>{{ enrollment.enrolled_at.strftime('%d.%m.%Y') }}</td>
-          </tr>
+        {% for d in details %}
+        <tr>
+          <td><strong>{{ d.enrollment.student.full_name() }}</strong></td>
+          <td>{{ d.enrollment.student.country or '–' }}</td>
+          <td><span class="badge">{{ d.enrollment.student.language_level }}</span></td>
+          <td><span class="badge">{{ d.enrollment.student.nursing_level }}</span></td>
+          <td>{{ d.enrollment.course.title }}</td>
+          <td>
+            <div class="progress-bar-wrap" style="width:120px">
+              <div class="progress-bar" style="width: {% if d.total_modules > 0 %}{{ (d.modules_done / d.total_modules * 100)|int }}{% else %}0{% endif %}%"></div>
+            </div>
+            <small>{{ d.modules_done }}/{{ d.total_modules }} Module</small>
+          </td>
+          <td>{{ d.attempts }}</td>
+          <td>{{ d.enrollment.enrolled_at.strftime('%d.%m.%Y') }}</td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>
   {% else %}
-    <p>Keine aktiven Einschreibungen vorhanden.</p>
+    <p class="empty-hint">Noch keine Einschreibungen vorhanden.</p>
   {% endif %}
 </div>
 {% endblock %}

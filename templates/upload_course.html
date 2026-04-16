@@ -1,34 +1,50 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
+  <div class="breadcrumb">
+    <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a> &rsaquo; Neuer Kurs
+  </div>
   <h1>Neuen Kurs erstellen</h1>
+  <p class="meta">Nach dem Speichern kannst du weitere Module und Quiz-Fragen auf der Kursseite hinzufügen.</p>
+
   <form method="post">
-    <label>Kursname</label>
-    <input type="text" name="title" required>
-    <label>Zusammenfassung</label>
-    <textarea name="summary" rows="3" required></textarea>
-    <label>Empfohlenes Niveau</label>
+    <h2>Kursdetails</h2>
+    <label>Kursname <span class="required">*</span></label>
+    <input type="text" name="title" required placeholder="z. B. Grundpflege für Berufseinsteiger">
+
+    <label>Zusammenfassung <span class="required">*</span></label>
+    <textarea name="summary" rows="3" required placeholder="Worum geht es in diesem Kurs? Was lernen die Schüler?"></textarea>
+
+    <label>Empfohlenes Sprachniveau</label>
     <select name="recommended_level">
-      <option value="A1">A1</option>
-      <option value="A2">A2</option>
-      <option value="B1">B1</option>
-      <option value="B2">B2</option>
-      <option value="C1">C1</option>
+      <option value="A1">A1 – Einsteiger</option>
+      <option value="A2" selected>A2 – Grundkenntnisse</option>
+      <option value="B1">B1 – Fortgeschrittene Grundkenntnisse</option>
+      <option value="B2">B2 – Selbständig</option>
+      <option value="C1">C1 – Kompetent</option>
     </select>
-    <h2>Erstes Modul</h2>
-    <label>Modultitel</label>
-    <input type="text" name="module_title" required>
-    <label>Modulbeschreibung</label>
-    <textarea name="module_description" rows="3" required></textarea>
+
+    <h2 style="margin-top:24px">Erstes Modul</h2>
+    <label>Modultitel <span class="required">*</span></label>
+    <input type="text" name="module_title" required placeholder="z. B. Einführung in die Grundpflege">
+
+    <label>Modulbeschreibung <span class="required">*</span></label>
+    <textarea name="module_description" rows="2" required placeholder="Was behandelt dieses Modul?"></textarea>
+
     <label>Modultyp</label>
     <select name="module_type">
+      <option value="reading">Leseinhalt</option>
       <option value="quiz">Quiz</option>
-      <option value="reading">Text</option>
       <option value="audio">Audio</option>
     </select>
-    <label>Inhalt</label>
-    <textarea name="content_body" rows="5"></textarea>
-    <button class="button" type="submit">Kurs speichern</button>
+
+    <label>Inhalt / Lerntext</label>
+    <textarea name="content_body" rows="6" placeholder="Füge hier den Lerninhalt ein. Bei Quiz-Modulen kannst du die Fragen nach dem Speichern auf der Kursseite hinzufügen."></textarea>
+
+    <div class="form-actions">
+      <button class="button" type="submit">Kurs speichern</button>
+      <a class="button button-secondary" href="{{ url_for('teacher_dashboard') }}">Abbrechen</a>
+    </div>
   </form>
 </div>
 {% endblock %}

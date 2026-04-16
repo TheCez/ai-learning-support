@@ -1,42 +1,97 @@
 {% extends 'base.html' %}
 {% block content %}
+
+{% if not onboarding_done %}
+<div class="onboarding-banner">
+  <div class="onboarding-banner-inner">
+    <div>
+      <strong>Fast fertig!</strong> Absolviere noch den Pflegewissen-Test, damit wir deinen Lernpfad optimal anpassen können.
+    </div>
+    <a class="button button-sm" href="{{ url_for('nursing_test') }}">Jetzt starten</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="grid-two">
   <section class="card">
-    <h2>Willkommen, {{ user.first_name }}</h2>
-    <p>Sprachniveau: <strong>{{ user.language_level }}</strong></p>
-    <p>Pflegewissen: <strong>{{ user.nursing_level }}</strong></p>
-    <p>Fachrichtung: {{ user.speciality or 'Noch nicht angegeben' }}</p>
-    <div class="actions-row">
-      <a class="button" href="{{ url_for('language_test') }}">Sprachtest wiederholen</a>
-      <a class="button button-secondary" href="{{ url_for('ai_professor') }}">KI-Professorin</a>
+    <h2>Willkommen, {{ user.first_name }} 👋</h2>
+    <div class="level-grid">
+      <div class="level-chip">
+        <span class="level-label">Deutschniveau</span>
+        <span class="level-value level-lang">{{ user.language_level }}</span>
+      </div>
+      <div class="level-chip">
+        <span class="level-label">Pflegewissen</span>
+        <span class="level-value level-nursing">{{ user.nursing_level }}</span>
+      </div>
+    </div>
+    {% if user.speciality %}
+    <p class="meta">Fachrichtung: {{ user.speciality }}</p>
+    {% endif %}
+    {% if user.country and user.country != 'Deutschland' %}
+    <p class="meta">Herkunftsland: {{ user.country }}</p>
+    {% endif %}
+    <div class="actions-row" style="margin-top:16px">
+      <a class="button button-sm button-secondary" href="{{ url_for('language_test') }}">Sprachtest wiederholen</a>
+      <a class="button button-sm button-secondary" href="{{ url_for('nursing_test') }}">Pflegetest wiederholen</a>
     </div>
   </section>
 
   <section class="card">
-    <h2>Meine Kurse</h2>
+    <div class="card-header-row">
+      <h2>Meine Kurse</h2>
+      <a class="button button-sm" href="{{ url_for('courses') }}">Alle Kurse</a>
+    </div>
     {% if enrolled %}
       <ul class="list">
         {% for course in enrolled %}
-          <li><a href="{{ url_for('course_detail', course_id=course.id) }}">{{ course.title }}</a></li>
+          <li class="course-list-item">
+            <div>
+              <a href="{{ url_for('course_detail', course_id=course.id) }}"><strong>{{ course.title }}</strong></a>
+              <div class="progress-bar-wrap">
+                <div class="progress-bar" style="width: {{ progress[course.id] }}%"></div>
+              </div>
+              <small class="meta">{{ progress[course.id] }}% abgeschlossen</small>
+            </div>
+          </li>
         {% endfor %}
       </ul>
     {% else %}
-      <p>Du hast noch keinen Kurs angemeldet.</p>
+      <p class="empty-hint">Du bist noch in keinem Kurs eingeschrieben.</p>
+      <a class="button button-sm" href="{{ url_for('courses') }}">Kurse entdecken</a>
     {% endif %}
   </section>
 </div>
 
 <section class="card">
-  <h2>Verfügbare Kurse</h2>
-  <div class="course-grid">
-    {% for course in available %}
-      <article class="course-card">
-        <h3>{{ course.title }}</h3>
-        <p>{{ course.summary }}</p>
-        <p><small>Empfohlenes Niveau: {{ course.recommended_level }}</small></p>
-        <a class="button button-secondary" href="{{ url_for('course_detail', course_id=course.id) }}">Details</a>
-      </article>
-    {% endfor %}
+  <div class="card-header-row">
+    <h2>Empfohlene Kurse</h2>
+    <a class="button button-sm button-secondary" href="{{ url_for('courses') }}">Alle ansehen</a>
+  </div>
+  {% if available %}
+    <div class="course-grid">
+      {% for course in available[:4] %}
+        <article class="course-card">
+          <div class="course-card-level badge">{{ course.recommended_level }}</div>
+          <h3>{{ course.title }}</h3>
+          <p>{{ course.summary }}</p>
+          <a class="button button-sm" href="{{ url_for('course_detail', course_id=course.id) }}">Kurs ansehen</a>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-hint">Du hast bereits alle verfügbaren Kurse eingeschrieben.</p>
+  {% endif %}
+</section>
+
+<section class="card ki-card">
+  <div class="ki-card-inner">
+    <div>
+      <h2>KI-Professorin</h2>
+      <p>Stelle Fragen zu Pflegethemen und erhalte Erklärungen auf deinem Sprachniveau ({{ user.language_level }}).</p>
+    </div>
+    <a class="button" href="{{ url_for('ai_professor') }}">KI-Professorin öffnen</a>
   </div>
 </section>
+
 {% endblock %}

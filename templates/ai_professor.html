@@ -1,16 +1,77 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>KI-Professorin</h1>
-  <form method="post">
-    <label>Wähle ein Thema oder gib ein Thema ein</label>
-    <input type="text" name="topic" placeholder="z. B. Vitalzeichen, Wundversorgung" required>
-    <button class="button" type="submit">Starten</button>
-  </form>
-  {% if response %}
-    <div class="ai-response">
-      <p>{{ response }}</p>
+  <div class="ki-header">
+    <div class="ki-avatar">🎓</div>
+    <div>
+      <h1>KI-Professorin</h1>
+      <p class="meta">Dein Sprachniveau: <strong>{{ user.language_level }}</strong> – Ich erkläre alles passend für dich.</p>
     </div>
+  </div>
+
+  <form method="post" id="ki-form">
+
+    {% if enrolled_courses %}
+    <div class="course-context-row">
+      <label for="course-select">Kurs als Kontext wählen <span class="meta">(optional)</span></label>
+      <select id="course-select" name="course_id">
+        <option value="">– Kein Kurs (allgemeines Pflegewissen) –</option>
+        {% for course in enrolled_courses %}
+          <option value="{{ course.id }}" {% if selected_course_id == course.id %}selected{% endif %}>
+            {{ course.title }} (Niveau {{ course.recommended_level }})
+          </option>
+        {% endfor %}
+      </select>
+      <p class="meta course-context-hint">Wenn du einen Kurs wählst, bezieht sich die KI-Professorin auf die Lerninhalte dieses Kurses.</p>
+    </div>
+    {% endif %}
+
+    <div class="topic-suggestions">
+      <p><strong>Themenvorschläge:</strong></p>
+      <div class="chip-row">
+        <button type="button" class="chip" onclick="setTopic('Vitalzeichen messen')">Vitalzeichen messen</button>
+        <button type="button" class="chip" onclick="setTopic('Händehygiene')">Händehygiene</button>
+        <button type="button" class="chip" onclick="setTopic('Dekubitus Prävention')">Dekubitus</button>
+        <button type="button" class="chip" onclick="setTopic('Medikamentengabe')">Medikamentengabe</button>
+        <button type="button" class="chip" onclick="setTopic('Wundversorgung')">Wundversorgung</button>
+        <button type="button" class="chip" onclick="setTopic('Sturzprävention')">Sturzprävention</button>
+        <button type="button" class="chip" onclick="setTopic('Pflegedokumentation')">Dokumentation</button>
+        <button type="button" class="chip" onclick="setTopic('Dehydratation erkennen')">Dehydratation</button>
+      </div>
+    </div>
+
+    <label for="topic-input">Deine Frage oder Thema:</label>
+    <div class="input-row">
+      <input id="topic-input" type="text" name="topic" value="{{ topic }}"
+             placeholder="z. B. Wie messe ich den Blutdruck richtig?" required>
+      <button class="button" type="submit">Fragen</button>
+    </div>
+  </form>
+
+  {% if response %}
+  <div class="ai-response">
+    <div class="ai-response-header">
+      <span class="ai-avatar">🎓</span>
+      <strong>Professor KI antwortet:</strong>
+      {% if selected_course_id %}
+        {% for course in enrolled_courses %}
+          {% if course.id == selected_course_id %}
+            <span class="badge badge-info" style="margin-left:8px">Kontext: {{ course.title }}</span>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+    </div>
+    <div class="ai-response-body">
+      {{ response | replace('\n', '<br>') | safe }}
+    </div>
+  </div>
   {% endif %}
 </div>
+
+<script>
+function setTopic(text) {
+  document.getElementById('topic-input').value = text;
+  document.getElementById('ki-form').submit();
+}
+</script>
 {% endblock %}

@@ -1,25 +1,50 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="hero">
-  <h1>careLearn</h1>
-  <p>Eine Lernplattform für deutsche Pflegeschulen mit Kursen, Tests und KI-Unterstützung.</p>
+  <h1>Willkommen bei careLearn</h1>
+  <p>Die Lernplattform für Pflegeschulen – mit adaptiven Kursen, Quizzes und KI-Unterstützung auf deinem Sprachniveau.</p>
+  {% if not current_user %}
   <div class="hero-actions">
-    <a class="button" href="{{ url_for('register') }}">Registrieren</a>
-    <a class="button button-secondary" href="{{ url_for('login') }}">Login</a>
+    <a class="button" href="{{ url_for('register') }}">Jetzt registrieren</a>
+    <a class="button button-secondary" href="{{ url_for('login') }}">Anmelden</a>
   </div>
+  {% else %}
+  <div class="hero-actions">
+    <a class="button" href="{{ url_for('student_dashboard' if current_user.role == 'student' else 'teacher_dashboard') }}">Zum Dashboard</a>
+  </div>
+  {% endif %}
 </div>
+
 <div class="feature-grid">
   <article>
-    <h2>Für Lehrende</h2>
-    <p>Lege Kurse an, lade Inhalte hoch und verfolge den Fortschritt deiner Schüler.</p>
+    <div class="feature-icon">📚</div>
+    <h3>Adaptive Kurse</h3>
+    <p>Lernmaterial wird deinem Deutschniveau und Vorwissen angepasst – von A1 bis C1.</p>
   </article>
   <article>
-    <h2>Für Schüler</h2>
-    <p>Registriere dich, starte mit einem Sprach- und Pflegewissenstest und wähle passende Kurse.</p>
+    <div class="feature-icon">✅</div>
+    <h3>Quizzes & Tests</h3>
+    <p>Überprüfe dein Wissen mit interaktiven Quiz-Modulen und sieh sofort, was du gelernt hast.</p>
   </article>
   <article>
-    <h2>KI-Lehrer</h2>
-    <p>Nutze die KI-Professorin, um Inhalte zu besprechen und Lernschritte zu begleiten.</p>
+    <div class="feature-icon">🎓</div>
+    <h3>KI-Professorin</h3>
+    <p>Stelle Fragen zu Pflegethemen und erhalte Erklärungen auf deinem persönlichen Sprachniveau.</p>
+  </article>
+  <article>
+    <div class="feature-icon">🌍</div>
+    <h3>Für internationale Fachkräfte</h3>
+    <p>Sprachtest und Pflegewissenstest beim Onboarding – für einen guten Start in Deutschland.</p>
+  </article>
+  <article>
+    <div class="feature-icon">📊</div>
+    <h3>Lernfortschritt</h3>
+    <p>Schüler und Lehrkräfte sehen jederzeit, welche Module abgeschlossen sind.</p>
+  </article>
+  <article>
+    <div class="feature-icon">🏥</div>
+    <h3>Pflegefachlich fundiert</h3>
+    <p>Inhalte orientieren sich am Rahmenlehrplan der deutschen Pflegeausbildung.</p>
   </article>
 </div>
 {% endblock %}

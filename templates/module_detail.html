@@ -1,13 +1,43 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>{{ module.title }}</h1>
+  <div class="breadcrumb">
+    <a href="{{ url_for('student_dashboard') }}">Dashboard</a> &rsaquo;
+    <a href="{{ url_for('course_detail', course_id=course.id) }}">{{ course.title }}</a> &rsaquo;
+    {{ module.title }}
+  </div>
+
+  <div class="module-header">
+    <h1>{{ module.title }}</h1>
+    <span class="badge">{{ module.module_type }}</span>
+  </div>
   <p>{{ module.description }}</p>
-  <div class="module-content">{{ module.content }}</div>
-  {% if module.module_type == 'quiz' and module.quiz_questions %}
-    <a class="button" href="{{ url_for('course_quiz', course_id=course.id, module_id=module.id) }}">Quiz starten</a>
-  {% else %}
-    <p>Dieses Modul enthält Lese- oder Hörinhalte für den Lernpfad.</p>
+
+  {% if module.content %}
+  <div class="module-content">
+    {{ module.content | replace('\n', '<br>') | safe }}
+  </div>
   {% endif %}
+
+  <div class="module-footer">
+    {% if module.module_type == 'quiz' %}
+      {% if module.quiz_questions %}
+        {% if last_attempt %}
+        <div class="last-attempt-info">
+          Letzter Versuch: <strong>{{ last_attempt.score }}/{{ module.quiz_questions|length }}</strong> Punkte
+          ({{ last_attempt.completed_at.strftime('%d.%m.%Y') }})
+        </div>
+        {% endif %}
+        <a class="button" href="{{ url_for('course_quiz', course_id=course.id, module_id=module.id) }}">
+          {% if last_attempt %}Quiz wiederholen{% else %}Quiz starten{% endif %}
+        </a>
+      {% else %}
+        <p class="empty-hint">Für dieses Quiz wurden noch keine Fragen hinterlegt.</p>
+      {% endif %}
+    {% else %}
+      <p class="meta">Lies dir den Inhalt in Ruhe durch.</p>
+    {% endif %}
+    <a class="button button-secondary" href="{{ url_for('course_detail', course_id=course.id) }}">Zurück zum Kurs</a>
+  </div>
 </div>
 {% endblock %}

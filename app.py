@@ -668,8 +668,6 @@ def ki_lehrer_api(user):
     slide_source = ''
     if module_id and speech and not speech.startswith('Fehler'):
         slide_title, slide_points = generate_slide_from_speech(speech, module_title)
-        first_sentence = speech.split('.')[0].strip()
-        slide_source = first_sentence[:140] + ('…' if len(first_sentence) > 140 else '')
 
     return jsonify({'response': speech, 'slide_title': slide_title,
                     'slide_points': slide_points, 'slide_source': slide_source})

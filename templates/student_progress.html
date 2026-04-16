@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>Schüler-Fortschritt</h1>
+  {% if enrollments %}
+    <table class="table">
+      <thead>
+        <tr><th>Schüler/in</th><th>Kurs</th><th>Die Module</th><th>Einschreibung</th></tr>
+      </thead>
+      <tbody>
+        {% for enrollment in enrollments %}
+          <tr>
+            <td>{{ enrollment.student.full_name() }}</td>
+            <td>{{ enrollment.course.title }}</td>
+            <td>{{ enrollment.completed_modules }}</td>
+            <td>{{ enrollment.enrolled_at.strftime('%d.%m.%Y') }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>Keine aktiven Einschreibungen vorhanden.</p>
+  {% endif %}
+</div>
+{% endblock %}

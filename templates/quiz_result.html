@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>Quiz-Ergebnis</h1>
+  <p>Du hast {{ score }} von {{ module.quiz_questions|length }} Punkten erreicht.</p>
+  <section>
+    {% for answer in answers %}
+      <div class="question-block">
+        <p><strong>{{ loop.index }}. {{ answer.question }}</strong></p>
+        <p>Deine Antwort: {{ answer.selected|join(', ') }}</p>
+        <p>Richtige Antwort: {{ answer.correct|join(', ') }}</p>
+      </div>
+    {% endfor %}
+  </section>
+  <a class="button" href="{{ url_for('student_dashboard') }}">Zurück zum Dashboard</a>
+</div>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>Pflegewissen-Test</h1>
+  <form method="post">
+    {% for question in questions %}
+      <div class="question-block">
+        <p><strong>{{ loop.index }}. {{ question.question }}</strong></p>
+        {% if question.multi %}
+          {% for option in question.choices %}
+            <label class="option-label">
+              <input type="checkbox" name="question_{{ loop.index0 }}" value="{{ option }}">
+              {{ option }}
+            </label>
+          {% endfor %}
+        {% else %}
+          {% for option in question.choices %}
+            <label class="option-label">
+              <input type="radio" name="question_{{ loop.index0 }}" value="{{ option }}" required>
+              {{ option }}
+            </label>
+          {% endfor %}
+        {% endif %}
+      </div>
+    {% endfor %}
+    <button class="button" type="submit">Auswerten</button>
+  </form>
+</div>
+{% endblock %}

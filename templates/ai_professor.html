@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>KI-Professorin</h1>
+  <form method="post">
+    <label>Wähle ein Thema oder gib ein Thema ein</label>
+    <input type="text" name="topic" placeholder="z. B. Vitalzeichen, Wundversorgung" required>
+    <button class="button" type="submit">Starten</button>
+  </form>
+  {% if response %}
+    <div class="ai-response">
+      <p>{{ response }}</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

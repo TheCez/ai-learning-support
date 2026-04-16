@@ -1,0 +1,19 @@
+UI for an AI Learning Support platform: the goal ist to buil an AI-Based toorl that structures Knowledge and supports flexible learning.
+
+--> Onboarding page: take some information about the student(First- , Lastname, Country of origin, first language, speciality)
+--> First Test to know Student Language level.
+--> Home Page
+--> Learning Page:
+	- Karteien Karte
+	- Bibiothek(INFORMATION VEREINFACH DARSTELLEN)
+	- Single / Multiple Choice
+	- Question answered with Audio
+	- Conversation with AI-Professor(random topic(based on Student's level) or topic selected by the student)
+--> Gamification:
+	- Friends Missions
+	- Day Goals
+	- Leaderboard + Lotto(each Friday 3 students would be selected from the leaderboard and would recieve for exemple a voucher for the cantine. the position on the board would be a weight for winner selection)
+--> KIP for the School
+	- Usage frequency(how many students, using Time, ...)
+	- Progress?
+--> Files Upload

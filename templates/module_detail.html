@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>{{ module.title }}</h1>
+  <p>{{ module.description }}</p>
+  <div class="module-content">{{ module.content }}</div>
+  {% if module.module_type == 'quiz' and module.quiz_questions %}
+    <a class="button" href="{{ url_for('course_quiz', course_id=course.id, module_id=module.id) }}">Quiz starten</a>
+  {% else %}
+    <p>Dieses Modul enthält Lese- oder Hörinhalte für den Lernpfad.</p>
+  {% endif %}
+</div>
+{% endblock %}

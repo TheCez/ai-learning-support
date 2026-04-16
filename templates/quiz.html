@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>Quiz: {{ module.title }}</h1>
+  <form method="post">
+    {% for question in module.quiz_questions %}
+      <div class="question-block">
+        <p><strong>{{ loop.index }}. {{ question.question }}</strong></p>
+        {% for option in question.options.split(';') %}
+          <label class="option-label">
+            <input type="{{ 'checkbox' if question.multi_choice else 'radio' }}" name="question_{{ question.id }}" value="{{ option }}" {% if not question.multi_choice %}required{% endif %}>
+            {{ option }}
+          </label>
+        {% endfor %}
+      </div>
+    {% endfor %}
+    <button class="button" type="submit">Quiz beenden</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>Registrierung</h1>
+  <form action="" method="post">
+    <label>Rolle</label>
+    <select name="role" required>
+      <option value="student">Student:in</option>
+      <option value="teacher">Lehrende:r</option>
+    </select>
+    <label>Vorname</label>
+    <input type="text" name="first_name" required>
+    <label>Nachname</label>
+    <input type="text" name="last_name" required>
+    <label>E-Mail</label>
+    <input type="email" name="email" required>
+    <label>Passwort</label>
+    <input type="password" name="password" required>
+    <label>Herkunftsland</label>
+    <input type="text" name="country">
+    <label>Muttersprache</label>
+    <input type="text" name="language">
+    <label>Fachrichtung</label>
+    <input type="text" name="speciality">
+    <button class="button" type="submit">Registrieren</button>
+  </form>
+</div>
+{% endblock %}

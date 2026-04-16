@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="hero">
+  <h1>careLearn</h1>
+  <p>Eine Lernplattform für deutsche Pflegeschulen mit Kursen, Tests und KI-Unterstützung.</p>
+  <div class="hero-actions">
+    <a class="button" href="{{ url_for('register') }}">Registrieren</a>
+    <a class="button button-secondary" href="{{ url_for('login') }}">Login</a>
+  </div>
+</div>
+<div class="feature-grid">
+  <article>
+    <h2>Für Lehrende</h2>
+    <p>Lege Kurse an, lade Inhalte hoch und verfolge den Fortschritt deiner Schüler.</p>
+  </article>
+  <article>
+    <h2>Für Schüler</h2>
+    <p>Registriere dich, starte mit einem Sprach- und Pflegewissenstest und wähle passende Kurse.</p>
+  </article>
+  <article>
+    <h2>KI-Lehrer</h2>
+    <p>Nutze die KI-Professorin, um Inhalte zu besprechen und Lernschritte zu begleiten.</p>
+  </article>
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="panel">
+  <h1>{{ course.title }}</h1>
+  <p>{{ course.summary }}</p>
+  <p>Empfohlenes Niveau: <strong>{{ course.recommended_level }}</strong></p>
+  {% if enrolled %}
+    <div class="badge">eingeschrieben</div>
+  {% else %}
+    <a class="button" href="{{ url_for('enroll_course', course_id=course.id) }}">Jetzt einschreiben</a>
+  {% endif %}
+  <section class="module-list">
+    <h2>Module</h2>
+    {% for module in course.modules %}
+      <article class="module-card">
+        <h3>{{ module.title }}</h3>
+        <p>{{ module.description }}</p>
+        <a class="button button-secondary" href="{{ url_for('course_module', course_id=course.id, module_id=module.id) }}">Ansehen</a>
+      </article>
+    {% endfor %}
+  </section>
+</div>
+{% endblock %}

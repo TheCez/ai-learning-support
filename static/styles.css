@@ -802,26 +802,72 @@ input:focus, select:focus, textarea:focus {
   overflow: hidden;
 }
 
+/* ── Chalkboard classroom background ─────────────── */
 .kl-avatar-section {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 20px 16px 8px;
+  padding: 20px 16px 0;
   flex-shrink: 0;
-  background: linear-gradient(180deg, #0f1e30 0%, #1a2d47 100%);
+  position: relative;
+  overflow: hidden;
+
+  /* Dark green chalkboard with chalk-dust texture */
+  background:
+    repeating-linear-gradient(
+      47deg,
+      transparent 0px, transparent 6px,
+      rgba(255,255,255,0.012) 6px, rgba(255,255,255,0.012) 7px
+    ),
+    repeating-linear-gradient(
+      -43deg,
+      transparent 0px, transparent 9px,
+      rgba(255,255,255,0.008) 9px, rgba(255,255,255,0.008) 10px
+    ),
+    linear-gradient(180deg, #1e3d1e 0%, #264d26 60%, #1a3a1a 100%);
+}
+
+/* Wooden chalk ledge at the bottom */
+.kl-avatar-section::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 14px;
+  background: linear-gradient(180deg, #8B6335 0%, #6b4a24 50%, #5a3d1e 100%);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.3), inset 0 -1px 0 rgba(255,255,255,0.08);
+}
+
+/* Chalk formula / decorations top-left */
+.kl-avatar-section::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    /* small chalk cross marks */
+    radial-gradient(circle 1px at 18px 28px, rgba(255,255,255,0.18) 100%, transparent 0),
+    radial-gradient(circle 1px at 300px 22px, rgba(255,255,255,0.15) 100%, transparent 0),
+    radial-gradient(circle 1px at 48px 58px, rgba(255,255,255,0.12) 100%, transparent 0),
+    radial-gradient(circle 1px at 280px 60px, rgba(255,255,255,0.10) 100%, transparent 0);
+  pointer-events: none;
 }
 
 .kl-avatar-wrap {
   position: relative;
   width: 260px;
   height: 320px;
-  margin-bottom: 10px;
-  border-radius: 18px;
+  margin-bottom: 14px;
+  border-radius: 4px;
   overflow: hidden;
-  background: #0f1e30;
-  border: 2px solid rgba(255,255,255,0.1);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(26,92,138,0.3);
+  background: #1e3d1e;   /* same chalkboard green so avatar blends in */
+  /* Chalk-frame border around avatar */
+  border: 3px solid rgba(255,255,255,0.18);
+  box-shadow:
+    0 0 0 6px rgba(26,92,138,0.0),
+    inset 0 0 0 1px rgba(255,255,255,0.06),
+    0 12px 36px rgba(0,0,0,0.5);
   transition: box-shadow 0.3s;
+  position: relative;
+  z-index: 1;
 }
 .kl-avatar-wrap.kl-speaking {
   animation: kl-speaking-pulse 0.9s ease-in-out infinite alternate;
@@ -837,17 +883,56 @@ input:focus, select:focus, textarea:focus {
   to   { box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 10px rgba(232,103,42,0.12); }
 }
 
+/* Chalk text decorations on the blackboard */
+.kl-chalk-deco {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+.kl-chalk {
+  position: absolute;
+  font-family: 'Segoe Print', 'Comic Sans MS', cursive;
+  color: rgba(255,255,255,0.28);
+  line-height: 1.3;
+  user-select: none;
+}
+.kl-chalk-tl {
+  top: 10px; left: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  max-width: 60px;
+  letter-spacing: 0.3px;
+}
+.kl-chalk-tr {
+  top: 10px; right: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.kl-chalk-formula {
+  bottom: 24px; left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.7;
+  letter-spacing: 0.5px;
+}
+
 .kl-professor-name {
   font-weight: 700;
   font-size: 14px;
   color: rgba(255,255,255,0.9);
   letter-spacing: .3px;
   margin-bottom: 2px;
+  position: relative;
+  z-index: 1;
 }
 .kl-speaking-label {
   height: 18px; display: flex; gap: 4px;
   align-items: center; justify-content: center;
   margin-top: 4px; opacity: 0; transition: opacity .3s;
+  position: relative; z-index: 1;
 }
 .kl-speaking-label.visible { opacity: 1; }
 .kl-dot {

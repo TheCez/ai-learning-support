@@ -662,13 +662,12 @@ def ki_lehrer_api(user):
 
     speech = call_gemini_chat(system, contents)
 
-    # Generate slide from the actual speech text (not the greeting)
+    # Generate slide whenever a module is selected (including greeting responses)
     slide_title  = ''
     slide_points = []
     slide_source = ''
-    if not is_greeting and speech and not speech.startswith('Fehler'):
+    if module_id and speech and not speech.startswith('Fehler'):
         slide_title, slide_points = generate_slide_from_speech(speech, module_title)
-        # First sentence of speech as source anchor for the slide
         first_sentence = speech.split('.')[0].strip()
         slide_source = first_sentence[:140] + ('…' if len(first_sentence) > 140 else '')
 

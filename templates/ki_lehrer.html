@@ -87,12 +87,19 @@
           <!-- Slide viewport -->
           <div class="kl-ppt-viewport" id="kl-ppt-viewport">
             <div class="kl-ppt-slide" id="kl-ppt-slide">
-              <div class="kl-ppt-slide-top">
-                <div class="kl-ppt-slide-num" id="kl-ppt-slide-num">1 / 1</div>
+              <div class="kl-ppt-slide-topbar">
+                <span class="kl-ppt-slide-num" id="kl-ppt-slide-num">–</span>
+              </div>
+              <div class="kl-ppt-slide-img-wrap" id="kl-ppt-img-wrap" style="display:none">
+                <img id="kl-ppt-img" alt="">
               </div>
               <div class="kl-ppt-slide-body">
                 <h2 class="kl-ppt-heading" id="kl-ppt-heading"></h2>
                 <ul class="kl-ppt-points" id="kl-ppt-points"></ul>
+              </div>
+              <div class="kl-ppt-source" id="kl-ppt-source" style="display:none">
+                <span class="kl-ppt-source-icon">💬</span>
+                <span id="kl-ppt-source-text"></span>
               </div>
               <div class="kl-ppt-slide-footer">
                 <span class="kl-ppt-footer-text">careLearn · Prof. Wagner</span>
@@ -106,6 +113,7 @@
             <div class="kl-ppt-dots" id="kl-ppt-dots"></div>
             <button class="kl-ppt-nav-btn" id="kl-next-btn" onclick="klNextSlide()" disabled>Weiter ›</button>
           </div>
+
         </div>
 
       </div>
@@ -140,43 +148,53 @@
 let klConversation   = [];
 let klModuleId       = null;
 let klIsLoading      = false;
-let klRecognition    = null;
 let klIsRecording    = false;
 let klAutoSpeak      = true;
 let klContinuousMode = false;
 
 // ── Slides ────────────────────────────────────
-let klSlides    = [];   // [{title, points}]
-let klSlideIdx  = -1;
+let klSlides   = [];   // [{title, points, source}]
+let klSlideIdx = -1;
 
-function klAddSlide(title, points) {
-  if (!title && (!points || !points.length)) return;
-  klSlides.push({ title: title || '', points: points || [] });
-  klSlideIdx = klSlides.length - 1;
-  klRenderCurrentSlide(true);
+function escH(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function klRenderCurrentSlide(animate) {
-  if (klSlides.length === 0) return;
-  const slide = klSlides[klSlideIdx];
-  const slideEl = document.getElementById('kl-ppt-slide');
+// Push ONE new slide and display it (called once per professor response)
+function klSetSlide(title, points, source) {
+  if (!title && (!points || !points.length)) return;
+  klSlides.push({ title: title || '', points: points || [], source: source || '' });
+  klSlideIdx = klSlides.length - 1;
+  klRenderSlide(true);
+}
 
+function klRenderSlide(animate) {
+  if (klSlides.length === 0) return;
+  const s = klSlides[klSlideIdx];
+
+  const slideEl = document.getElementById('kl-ppt-slide');
   if (animate) {
     slideEl.classList.remove('kl-slide-in');
-    void slideEl.offsetWidth; // reflow
+    void slideEl.offsetWidth;
     slideEl.classList.add('kl-slide-in');
   }
 
-  document.getElementById('kl-ppt-heading').textContent = slide.title;
+  // Slide counter
+  document.getElementById('kl-ppt-slide-num').textContent =
+    (klSlideIdx + 1) + ' / ' + klSlides.length;
+
+  // Heading
+  document.getElementById('kl-ppt-heading').textContent = s.title;
+
+  // Bullet points
   const ul = document.getElementById('kl-ppt-points');
   ul.innerHTML = '';
-  (slide.points || []).forEach((pt, i) => {
+  s.points.forEach((pt, i) => {
     const li = document.createElement('li');
     li.className = 'kl-ppt-point';
-    li.style.animationDelay = (i * 0.14) + 's';
-    // Bold the term before the colon
+    li.style.animationDelay = animate ? (i * 0.12) + 's' : '0s';
     const colon = pt.indexOf(':');
-    if (colon > 0 && colon < 40) {
+    if (colon > 0 && colon < 42) {
       li.innerHTML = '<strong>' + escH(pt.slice(0, colon)) + '</strong>: ' + escH(pt.slice(colon + 1).trim());
     } else {
       li.textContent = pt;
@@ -184,9 +202,18 @@ function klRenderCurrentSlide(animate) {
     ul.appendChild(li);
   });
 
-  // Slide number
-  document.getElementById('kl-ppt-slide-num').textContent =
-    (klSlideIdx + 1) + ' / ' + klSlides.length;
+  // Source anchor
+  const srcEl = document.getElementById('kl-ppt-source');
+  document.getElementById('kl-ppt-source-text').textContent = s.source;
+  srcEl.style.display = s.source ? 'flex' : 'none';
+
+  // Image
+  document.getElementById('kl-ppt-img-wrap').style.display = 'none';
+  if (s.title) klFetchWikipediaImage(s.title);
+
+  // Nav buttons
+  document.getElementById('kl-prev-btn').disabled = klSlideIdx <= 0;
+  document.getElementById('kl-next-btn').disabled = klSlideIdx >= klSlides.length - 1;
 
   // Dots
   const dots = document.getElementById('kl-ppt-dots');
@@ -194,22 +221,39 @@ function klRenderCurrentSlide(animate) {
   klSlides.forEach((_, i) => {
     const d = document.createElement('span');
     d.className = 'kl-ppt-dot' + (i === klSlideIdx ? ' active' : '');
-    d.onclick = () => { klSlideIdx = i; klRenderCurrentSlide(true); };
+    d.onclick = () => { klSlideIdx = i; klRenderSlide(true); };
     dots.appendChild(d);
   });
-
-  document.getElementById('kl-prev-btn').disabled = klSlideIdx <= 0;
-  document.getElementById('kl-next-btn').disabled = klSlideIdx >= klSlides.length - 1;
 }
 
 function klPrevSlide() {
-  if (klSlideIdx > 0) { klSlideIdx--; klRenderCurrentSlide(true); }
+  if (klSlideIdx > 0) { klSlideIdx--; klRenderSlide(true); }
 }
 function klNextSlide() {
-  if (klSlideIdx < klSlides.length - 1) { klSlideIdx++; klRenderCurrentSlide(true); }
+  if (klSlideIdx < klSlides.length - 1) { klSlideIdx++; klRenderSlide(true); }
 }
-function escH(s) {
-  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+async function klFetchWikipediaImage(title) {
+  // Try slide title, then individual words as fallback search terms
+  const terms = [title];
+  title.split(/[\s,]+/).forEach(w => { if (w.length > 3) terms.push(w); });
+
+  for (const term of terms) {
+    try {
+      const url = 'https://de.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(term);
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const src  = data?.thumbnail?.source || data?.originalimage?.source;
+      if (!src) continue;
+      const img  = document.getElementById('kl-ppt-img');
+      const wrap = document.getElementById('kl-ppt-img-wrap');
+      img.onload  = () => { wrap.style.display = 'block'; };
+      img.onerror = () => { wrap.style.display = 'none';  };
+      img.src = src;
+      return; // found one – stop
+    } catch(e) { /* try next */ }
+  }
 }
 
 // ── Auto-welcome on page load ──────────────────
@@ -244,8 +288,9 @@ function klOnModuleChange(select) {
 
   klModuleId     = parseInt(opt.value);
   klConversation = [];
-  klSlides       = [];
-  klSlideIdx     = -1;
+  // Reset slide stack for the new module session
+  klSlides   = [];
+  klSlideIdx = -1;
 
   const mod    = window._klModules[String(klModuleId)] || {};
   const title  = mod.title  || opt.dataset.title  || '';
@@ -259,8 +304,12 @@ function klOnModuleChange(select) {
   document.getElementById('kl-ppt-stage').classList.remove('hidden');
   document.getElementById('kl-ppt-points').innerHTML = '';
   document.getElementById('kl-ppt-heading').textContent = '';
+  document.getElementById('kl-ppt-source').style.display = 'none';
+  document.getElementById('kl-ppt-img-wrap').style.display = 'none';
+  document.getElementById('kl-ppt-slide-num').textContent = '–';
   document.getElementById('kl-ppt-dots').innerHTML = '';
-  document.getElementById('kl-ppt-slide-num').textContent = '– / –';
+  document.getElementById('kl-prev-btn').disabled = true;
+  document.getElementById('kl-next-btn').disabled = true;
 
   document.getElementById('kl-chat').innerHTML = '';
   klSetInputEnabled(false);
@@ -278,7 +327,7 @@ function klOnModuleChange(select) {
     klConversation.push({role: 'model', text});
     klAddBubble('professor', text);
     if (data.slide_title || (data.slide_points && data.slide_points.length))
-      klAddSlide(data.slide_title, data.slide_points);
+      klSetSlide(data.slide_title, data.slide_points, data.slide_source || '');
     if (klAutoSpeak) klSpeak(text);
     klSetInputEnabled(true);
   })
@@ -315,7 +364,7 @@ function klSend() {
     klConversation.push({role: 'model', text: resp});
     klAddBubble('professor', resp);
     if (data.slide_title || (data.slide_points && data.slide_points.length))
-      klAddSlide(data.slide_title, data.slide_points);
+      klSetSlide(data.slide_title, data.slide_points, data.slide_source || '');
     if (klAutoSpeak) klSpeak(resp);
     else if (klContinuousMode) setTimeout(klStartMic, 400);
     klIsLoading = false;
@@ -370,48 +419,126 @@ function klRemoveLoadingBubble() {
   if (el) el.remove();
 }
 
-// ── Spracheingabe ──────────────────────────────
+// ── Spracheingabe (ElevenLabs STT via MediaRecorder) ──────────────
+let klMediaRecorder  = null;
+let klAudioChunks    = [];
+let klSilenceTimer   = null;
+let klAudioAnalyser  = null;
+let klAudioStream    = null;
+
 function klToggleMic() {
-  window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
+  window.klResumeAudio && window.klResumeAudio();
   if (klIsRecording) { klStopContinuous(); return; }
   klContinuousMode = true;
   klUpdateMicUI();
   klStartMic();
 }
-function klStartMic() {
+
+async function klStartMic() {
   if (klIsRecording || klIsLoading) return;
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { alert('Spracherkennung nur in Chrome/Edge verfügbar.'); return; }
-  klRecognition = new SR();
-  klRecognition.lang = 'de-DE';
-  klRecognition.interimResults = true;
-  klRecognition.continuous = false;
-  klRecognition.onstart = () => {
-    klIsRecording = true; klUpdateMicUI();
-    document.getElementById('kl-mic-status').classList.remove('hidden');
-    window.speechSynthesis && window.speechSynthesis.cancel();
-  };
-  klRecognition.onresult = (e) => {
-    const t = Array.from(e.results).map(r => r[0].transcript).join('');
-    document.getElementById('kl-text-input').value = t;
-    if (e.results[e.results.length-1].isFinal) { klStopMic(); klSend(); }
-  };
-  klRecognition.onerror = (e) => {
-    klStopMic();
-    if (e.error === 'not-allowed') { klContinuousMode = false; klUpdateMicUI(); alert('Mikrofon verweigert.'); }
-  };
-  klRecognition.onend = () => klStopMic();
-  klRecognition.start();
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch(e) {
+    klContinuousMode = false; klUpdateMicUI();
+    alert('Mikrofon verweigert: ' + e.message);
+    return;
+  }
+  klAudioStream = stream;
+  klIsRecording = true;
+  klUpdateMicUI();
+  document.getElementById('kl-mic-status').classList.remove('hidden');
+  window.speechSynthesis && window.speechSynthesis.cancel();
+
+  // ── Silence detection via AnalyserNode ────────────────────────
+  const actx     = new AudioContext();
+  const source   = actx.createMediaStreamSource(stream);
+  klAudioAnalyser = actx.createAnalyser();
+  klAudioAnalyser.fftSize = 512;
+  source.connect(klAudioAnalyser);
+  const buf = new Uint8Array(klAudioAnalyser.fftSize);
+
+  function checkSilence() {
+    if (!klIsRecording) return;
+    klAudioAnalyser.getByteTimeDomainData(buf);
+    const rms = Math.sqrt(buf.reduce((s,v) => s + (v-128)*(v-128), 0) / buf.length);
+    if (rms < 5) {                         // below threshold → silence
+      if (!klSilenceTimer) {
+        klSilenceTimer = setTimeout(() => {
+          if (klIsRecording) klFinishRecording();
+        }, 1400);                           // 1.4 s silence → done
+      }
+    } else {
+      clearTimeout(klSilenceTimer);
+      klSilenceTimer = null;
+    }
+    requestAnimationFrame(checkSilence);
+  }
+  requestAnimationFrame(checkSilence);
+
+  // ── MediaRecorder ─────────────────────────────────────────────
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus' : 'audio/webm';
+  klMediaRecorder = new MediaRecorder(stream, { mimeType });
+  klAudioChunks   = [];
+  klMediaRecorder.ondataavailable = e => { if (e.data.size > 0) klAudioChunks.push(e.data); };
+  klMediaRecorder.onstop = klOnRecordingStop;
+  klMediaRecorder.start(100);
 }
-function klStopMic() {
+
+function klFinishRecording() {
+  if (!klIsRecording) return;
+  clearTimeout(klSilenceTimer); klSilenceTimer = null;
   klIsRecording = false;
-  if (klRecognition) { try { klRecognition.stop(); } catch(e){} klRecognition = null; }
+  klUpdateMicUI();
+  if (klMediaRecorder && klMediaRecorder.state !== 'inactive') klMediaRecorder.stop();
+  if (klAudioStream) { klAudioStream.getTracks().forEach(t => t.stop()); klAudioStream = null; }
+}
+
+async function klOnRecordingStop() {
+  if (!klAudioChunks.length) {
+    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+    return;
+  }
+  const blob = new Blob(klAudioChunks, { type: klMediaRecorder.mimeType });
+  klAudioChunks = [];
+
+  document.getElementById('kl-text-input').value = '…';
+  try {
+    const resp = await fetch('/api/stt', {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type },
+      body: blob
+    });
+    const data = await resp.json();
+    const text = (data.text || '').trim();
+    document.getElementById('kl-text-input').value = text;
+    if (text) klSend();
+    else if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+  } catch(e) {
+    console.warn('STT error:', e);
+    document.getElementById('kl-text-input').value = '';
+    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 300);
+  }
+}
+
+function klStopMic() {
+  clearTimeout(klSilenceTimer); klSilenceTimer = null;
+  klIsRecording = false;
+  if (klMediaRecorder && klMediaRecorder.state !== 'inactive') {
+    try { klMediaRecorder.stop(); } catch(e) {}
+  }
+  if (klAudioStream) { klAudioStream.getTracks().forEach(t => t.stop()); klAudioStream = null; }
+  klMediaRecorder = null;
   klUpdateMicUI();
   if (!klContinuousMode) document.getElementById('kl-mic-status').classList.add('hidden');
 }
+
 function klStopContinuous() {
-  klContinuousMode = false; klIsRecording = false;
-  if (klRecognition) { try { klRecognition.stop(); } catch(e){} klRecognition = null; }
+  klContinuousMode = false;
+  klFinishRecording();
+  klStopMic();
   klUpdateMicUI();
   document.getElementById('kl-mic-status').classList.add('hidden');
 }

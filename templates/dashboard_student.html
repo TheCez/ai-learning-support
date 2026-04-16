@@ -84,6 +84,27 @@
   {% endif %}
 </section>
 
+{% if due_reviews %}
+<section class="card">
+  <h2>📅 Wiederholungen fällig</h2>
+  <p class="meta">Spaced Repetition – diese Module sind jetzt zur Wiederholung empfohlen:</p>
+  <ul class="list">
+    {% for item in due_reviews %}
+    <li class="course-list-item">
+      <div style="flex:1">
+        <strong>{{ item.module_title }}</strong>
+        <span class="meta"> – {{ item.course_title }}</span>
+        <div class="meta" style="margin-top:2px">
+          Letztes Ergebnis: <strong>{{ item.pct }}%</strong> · fällig seit {{ item.due_since }}
+        </div>
+      </div>
+      <a class="button button-sm" href="{{ item.quiz_url }}">Jetzt wiederholen</a>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section class="card ki-card">
   <div class="ki-card-inner">
     <div>

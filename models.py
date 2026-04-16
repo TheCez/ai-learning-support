@@ -80,7 +80,10 @@ class QuizAttempt(db.Model):
     student_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     module_id = db.Column(db.Integer, db.ForeignKey('module.id'))
     score = db.Column(db.Integer, nullable=False)
+    max_score = db.Column(db.Integer, default=5)        # total questions
+    pct = db.Column(db.Integer, default=0)              # percentage correct
     completed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    next_review_at = db.Column(db.DateTime, nullable=True)  # spaced repetition
 
     student = db.relationship('User', back_populates='quiz_attempts')
     module = db.relationship('Module', back_populates='quiz_attempts')

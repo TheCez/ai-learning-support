@@ -148,6 +148,17 @@ function renderResults(data) {
        <h2>Antworten im Detail</h2>
        ${detailHtml}
      </section>
+     <div class="spaced-review-box">
+       <div class="spaced-review-icon">${pct >= 70 ? '🧠' : '📅'}</div>
+       <div>
+         <strong>Wiederholung eingeplant:</strong>
+         Nächste Übung empfohlen am <strong>${escHtml(data.next_review_date || '–')}</strong>
+         ${pct >= 90 ? '(Super – du kannst 2 Wochen pausieren!)' :
+           pct >= 70 ? '(Gut – eine Woche Pause reicht.)' :
+           pct >= 50 ? '(Noch etwas üben – in 3 Tagen wiederholen.)' :
+                       '(Schon morgen wiederholen – das Thema braucht mehr Übung.)'}
+       </div>
+     </div>
      <div class="actions-row">
        <a class="button" href="/courses/${courseId}/module/${moduleId}">Modul erneut ansehen</a>
        <a class="button button-secondary" href="/student">Zum Dashboard</a>

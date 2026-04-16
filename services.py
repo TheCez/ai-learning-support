@@ -28,94 +28,94 @@ LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1']
 # Stufen A1 → C1
 # ────────────────────────────────────────────────
 LANGUAGE_TEST = [
-    # A1 – Grundlegendes Alltagsvokabular
+    # A1 – Grundlegendes Alltagsdeutsch
     {
-        'question': 'Der Patient liegt im ___.',
-        'choices': ['Bett', 'Büro', 'Garten', 'Auto'],
-        'answer': 'Bett',
+        'question': 'Was bedeutet "Guten Morgen"?',
+        'choices': ['Auf Wiedersehen', 'Gute Nacht', 'Hallo am Morgen', 'Danke schön'],
+        'answer': 'Hallo am Morgen',
         'level': 'A1'
     },
     {
-        'question': 'Wie fragt man höflich nach dem Befinden?',
-        'choices': [
-            'Wie geht es Ihnen heute?',
-            'Wohin gehen Sie?',
-            'Was essen Sie gern?',
-            'Wann kommen Sie?'
-        ],
-        'answer': 'Wie geht es Ihnen heute?',
+        'question': 'Welches Wort ist ein Artikel für männliche Nomen (Maskulinum)?',
+        'choices': ['die', 'das', 'der', 'ein'],
+        'answer': 'der',
         'level': 'A1'
     },
-    # A2 – Einfacher medizinischer Kontext
+    # A2 – Einfache Grammatik und Wortschatz
     {
-        'question': 'Der Patient ___ über Schmerzen in der Brust.',
-        'choices': ['klagt', 'lacht', 'singt', 'springt'],
-        'answer': 'klagt',
+        'question': 'Ergänze: "Ich ___ heute müde."',
+        'choices': ['bin', 'hat', 'sind', 'haben'],
+        'answer': 'bin',
         'level': 'A2'
     },
     {
-        'question': 'Was ist ein "Fieberthermometer"?',
+        'question': 'Welcher Satz ist richtig?',
         'choices': [
-            'Ein Gerät zum Messen der Körpertemperatur',
-            'Ein Gerät zum Messen des Blutdrucks',
-            'Ein Medikament gegen Fieber',
-            'Ein Verband für Wunden'
+            'Er geht nach Hause gestern.',
+            'Er ging gestern nach Hause.',
+            'Er geht gestern nach Hause.',
+            'Gestern er geht nach Hause.'
         ],
-        'answer': 'Ein Gerät zum Messen der Körpertemperatur',
+        'answer': 'Er ging gestern nach Hause.',
         'level': 'A2'
     },
-    # B1 – Medizinische Fachbegriffe und Grammatik
+    # B1 – Grammatik: Kasus und Zeitformen
     {
-        'question': 'Welcher Satz ist grammatisch korrekt?',
+        'question': 'Welcher Satz verwendet den Akkusativ korrekt?',
         'choices': [
-            'Ich habe den Patient gewaschen.',
-            'Ich habe dem Patienten gewaschen.',
-            'Ich habe den Patienten gewaschen.',
-            'Ich habe der Patient gewaschen.'
+            'Ich helfe dem Mann.',
+            'Ich sehe den Mann.',
+            'Ich gebe der Mann das Buch.',
+            'Ich spreche mit dem Mann.'
         ],
-        'answer': 'Ich habe den Patienten gewaschen.',
+        'answer': 'Ich sehe den Mann.',
         'level': 'B1'
     },
     {
-        'question': 'Was bedeutet "Vitalzeichen"?',
-        'choices': [
-            'Grundlegende Körperfunktionen wie Puls, Blutdruck und Atmung',
-            'Anzeichen einer schweren Krankheit',
-            'Das Körpergewicht des Patienten',
-            'Die Medikamente eines Patienten'
-        ],
-        'answer': 'Grundlegende Körperfunktionen wie Puls, Blutdruck und Atmung',
+        'question': 'Was ist das Gegenteil von "laut"?',
+        'choices': ['langsam', 'leise', 'hell', 'groß'],
+        'answer': 'leise',
         'level': 'B1'
     },
-    # B2 – Fachsprachliche Wendungen und Lateinkenntnisse
+    # B2 – Komplexe Grammatik und Stil
     {
-        'question': '"Subkutan" beschreibt eine Verabreichung …',
-        'choices': ['in die Vene', 'in den Muskel', 'unter die Haut', 'auf die Haut'],
-        'answer': 'unter die Haut',
+        'question': 'Welche Konjunktion leitet einen Kausalsatz ein?',
+        'choices': ['obwohl', 'damit', 'weil', 'falls'],
+        'answer': 'weil',
         'level': 'B2'
     },
     {
-        'question': 'Ergänzen Sie den Pflegebericht korrekt: "Die Patientin wurde ___ Bett mobilisiert."',
-        'choices': ['aus dem', 'aus den', 'aus der', 'aus das'],
-        'answer': 'aus dem',
+        'question': 'Welche Formulierung ist förmlich und korrekt?',
+        'choices': [
+            'Ich will das Formular haben.',
+            'Könnten Sie mir bitte das Formular geben?',
+            'Gib mir das Formular.',
+            'Das Formular, ich brauche es.'
+        ],
+        'answer': 'Könnten Sie mir bitte das Formular geben?',
         'level': 'B2'
     },
-    # C1 – Komplexe Fachterminologie und Textverstehen
+    # C1 – Schriftlicher Ausdruck und Textverstehen
     {
-        'question': 'Was bedeutet "Dyspnoe"?',
-        'choices': ['Schwindel und Gleichgewichtsstörungen', 'Atemnot oder erschwertes Atmen', 'Herzrasen', 'Übelkeit und Erbrechen'],
-        'answer': 'Atemnot oder erschwertes Atmen',
+        'question': 'Was bedeutet die Redewendung "auf dem Laufenden bleiben"?',
+        'choices': [
+            'Schnell laufen',
+            'Immer informiert sein',
+            'Eine Liste führen',
+            'Pünktlich sein'
+        ],
+        'answer': 'Immer informiert sein',
         'level': 'C1'
     },
     {
-        'question': 'Welche Formulierung ist für einen formellen Pflegebericht korrekt?',
+        'question': 'Welcher Satz ist stilistisch am angemessensten für einen formellen Brief?',
         'choices': [
-            'Patient hat schlecht geschlafen, war unruhig die ganze Nacht.',
-            'Der Patient schlief schlecht und zeigte nächtliche Unruhe.',
-            'Patient schläft schlecht, Nacht war unruhig.',
-            'Hat nicht gut geschlafen der Patient, war er unruhig.'
+            'Ich finde Ihren Vorschlag mega gut.',
+            'Ihr Vorschlag ist echt interessant.',
+            'Ich erachte Ihren Vorschlag als äußerst konstruktiv.',
+            'Der Vorschlag von Ihnen ist nicht schlecht.'
         ],
-        'answer': 'Der Patient schlief schlecht und zeigte nächtliche Unruhe.',
+        'answer': 'Ich erachte Ihren Vorschlag als äußerst konstruktiv.',
         'level': 'C1'
     },
 ]
@@ -472,11 +472,16 @@ def generate_slide_from_speech(speech: str, module_title: str) -> tuple:
     snippet = speech[:900]
     context = f'Modul: {module_title}\n' if module_title else ''
     prompt = (
-        f'Erstelle eine kompakte Lernfolie (wie PowerPoint) fuer diese Erklaerung:\n'
+        f'Erstelle EINE einzige kompakte Lernfolie fuer diese Erklaerung:\n'
         f'{context}"{snippet}"\n\n'
+        'Regeln:\n'
+        '- Genau 3 Stichpunkte, nur die WICHTIGSTEN Fakten\n'
+        '- Jeder Stichpunkt max. 10 Woerter\n'
+        '- Format: "Fachbegriff: kurze Erklaerung"\n'
+        '- Wikipedia-tauglicher Titel fuer die Bildsuche (1-3 Woerter, deutsch)\n\n'
         'Antworte NUR mit validem JSON (kein Markdown, kein anderer Text):\n'
-        '{"titel":"(max 4 Woerter, spezifisch fuer DIESEN Inhalt)",'
-        '"punkte":["Fachbegriff: Erklaerung","Fachbegriff: Erklaerung","Fachbegriff: Erklaerung"]}'
+        '{"titel":"(1-3 Woerter, fuer Wikipedia-Suche geeignet)",'
+        '"punkte":["Begriff: Erklaerung","Begriff: Erklaerung","Begriff: Erklaerung"]}'
     )
 
     client = genai.Client(api_key=api_key)
@@ -634,8 +639,10 @@ def generate_language_test_questions() -> list:
         return []
 
     prompt = (
-        'Erstelle 10 Deutsch-Testfragen für Pflegepersonal (GER A1–C1, je 2 Fragen pro Niveau).\n'
-        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice. Pflegerischer Kontext.\n'
+        'Erstelle 10 allgemeine Deutsch-Testfragen (GER A1–C1, je 2 Fragen pro Niveau).\n'
+        'Themen: Grammatik (Kasus, Zeitformen, Konjunktionen), Wortschatz (Alltag, Schule, Arbeit), '
+        'Schreibstil (formell vs. informell), Redewendungen. KEIN Pflegekontext.\n'
+        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice.\n'
         'Antworte NUR mit validem JSON:\n'
         '{"questions":['
         '{"type":"free_text","level":"A1","question":"...","model_answer":"..."},'
@@ -1094,34 +1101,54 @@ def init_db(app):
             db.session.add(teacher)
             db.session.commit()
 
-        # Add current_module_id column if missing (SQLite doesn't support ALTER TABLE ADD COLUMN idempotently)
-        try:
-            db.session.execute(db.text('ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)'))
-            db.session.commit()
-        except Exception:
-            db.session.rollback()  # Column already exists
+        # Migrations: add columns if missing
+        for stmt in [
+            'ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)',
+            'ALTER TABLE quiz_attempt ADD COLUMN max_score INTEGER DEFAULT 5',
+            'ALTER TABLE quiz_attempt ADD COLUMN pct INTEGER DEFAULT 0',
+            'ALTER TABLE quiz_attempt ADD COLUMN next_review_at DATETIME',
+        ]:
+            try:
+                db.session.execute(db.text(stmt))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
         # All known demo title sets (old and new) for cleanup
         OLD_DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
         NEW_DEMO_TITLES = {'Blutdruckmessung', 'Anatomie des Herzens', 'Patientenmobilisation'}
         ALL_DEMO_TITLES = OLD_DEMO_TITLES | NEW_DEMO_TITLES
 
-        existing_titles = {c.title for c in Course.query.filter_by(owner_id=teacher.id).all()}
+        # Determine the target owner for demo courses (real teacher if exists, otherwise system teacher)
+        real_teacher = User.query.filter(
+            User.role == 'teacher',
+            User.email != 'lehrer@carelearn.de'
+        ).order_by(User.id).first()
+        demo_owner = real_teacher if real_teacher else teacher
 
-        # Remove duplicates (can happen when debug reloader fires init_db twice)
+        # Remove all duplicate demo courses (keep the lowest id per title across all teachers)
         seen = set()
-        for c in Course.query.filter_by(owner_id=teacher.id).order_by(Course.id).all():
+        all_demo_courses = Course.query.filter(Course.title.in_(ALL_DEMO_TITLES)).order_by(Course.id).all()
+        for c in all_demo_courses:
             if c.title in seen:
                 db.session.delete(c)
             else:
                 seen.add(c.title)
         db.session.commit()
 
-        # Remove old-style demo courses; seed new PDF-based ones if not present
-        has_new = NEW_DEMO_TITLES.issubset(existing_titles)
+        # Check whether the 3 current demo courses already exist (under any teacher)
+        existing_new = {c.title for c in Course.query.filter(Course.title.in_(NEW_DEMO_TITLES)).all()}
+
+        # Remove old-style demo courses and seed new ones if not already present
+        has_new = NEW_DEMO_TITLES.issubset(existing_new)
         if not has_new:
-            for c in Course.query.filter_by(owner_id=teacher.id).all():
-                if c.title in ALL_DEMO_TITLES:
-                    db.session.delete(c)
+            for c in Course.query.filter(Course.title.in_(ALL_DEMO_TITLES)).all():
+                db.session.delete(c)
             db.session.commit()
-            _seed_demo_courses(teacher.id)
+            _seed_demo_courses(demo_owner.id)
+        else:
+            # Ensure all existing new demo courses are owned by demo_owner
+            for c in Course.query.filter(Course.title.in_(NEW_DEMO_TITLES)).all():
+                if c.owner_id != demo_owner.id:
+                    c.owner_id = demo_owner.id
+            db.session.commit()

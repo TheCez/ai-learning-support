@@ -20,23 +20,15 @@
   {% endif %}
 
   <div class="module-footer">
-    {% if module.module_type == 'quiz' %}
-      {% if module.quiz_questions %}
-        {% if last_attempt %}
-        <div class="last-attempt-info">
-          Letzter Versuch: <strong>{{ last_attempt.score }}/{{ module.quiz_questions|length }}</strong> Punkte
-          ({{ last_attempt.completed_at.strftime('%d.%m.%Y') }})
-        </div>
-        {% endif %}
-        <a class="button" href="{{ url_for('course_quiz', course_id=course.id, module_id=module.id) }}">
-          {% if last_attempt %}Quiz wiederholen{% else %}Quiz starten{% endif %}
-        </a>
-      {% else %}
-        <p class="empty-hint">Für dieses Quiz wurden noch keine Fragen hinterlegt.</p>
-      {% endif %}
-    {% else %}
-      <p class="meta">Lies dir den Inhalt in Ruhe durch.</p>
+    {% if last_attempt %}
+    <div class="last-attempt-info">
+      Letzter Quiz-Versuch: <strong>{{ last_attempt.score }} Punkte</strong>
+      ({{ last_attempt.completed_at.strftime('%d.%m.%Y') }})
+    </div>
     {% endif %}
+    <a class="button" href="{{ url_for('course_quiz', course_id=course.id, module_id=module.id) }}">
+      {% if last_attempt %}Quiz wiederholen{% else %}Quiz starten{% endif %}
+    </a>
     <a class="button button-secondary" href="{{ url_for('course_detail', course_id=course.id) }}">Zurück zum Kurs</a>
   </div>
 </div>

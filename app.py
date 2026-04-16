@@ -134,13 +134,41 @@ def student_dashboard(user):
             progress[course.id] = int(done / total * 100)
 
     onboarding_done = user.language_score > 0 and user.nursing_score > 0
+
+    # Spaced repetition: collect modules due for review
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+    due_reviews = []
+    seen_modules = set()
+    latest_attempts = db.session.query(QuizAttempt)\
+        .filter_by(student_id=user.id)\
+        .order_by(QuizAttempt.completed_at.desc()).all()
+    for attempt in latest_attempts:
+        if attempt.module_id in seen_modules:
+            continue
+        seen_modules.add(attempt.module_id)
+        if attempt.next_review_at and attempt.next_review_at <= now:
+            mod = Module.query.get(attempt.module_id)
+            if mod:
+                delta = now - attempt.next_review_at
+                days_overdue = delta.days
+                due_label = 'heute' if days_overdue == 0 else f'vor {days_overdue} Tag(en)'
+                due_reviews.append({
+                    'module_title': mod.title,
+                    'course_title': mod.course.title if mod.course else '',
+                    'pct': attempt.pct or 0,
+                    'due_since': due_label,
+                    'quiz_url': f'/courses/{mod.course_id}/module/{mod.id}/quiz' if mod.course_id else '#',
+                })
+
     return render_template(
         'dashboard_student.html',
         user=user,
         enrolled=enrolled,
         available=available,
         progress=progress,
-        onboarding_done=onboarding_done
+        onboarding_done=onboarding_done,
+        due_reviews=due_reviews,
     )
 
 
@@ -307,13 +335,30 @@ def api_quiz_submit(user):
     if not module_id or not questions:
         return jsonify({'error': 'Fehlende Daten'}), 400
 
+    from datetime import datetime, timedelta
     module = Module.query.get_or_404(module_id)
     results = evaluate_ai_answers(questions, answers, user.language_level or 'A2')
     score = sum(r['score'] for r in results)
     total = len(results)
     pct = int(score / total * 100) if total else 0
 
-    attempt = QuizAttempt(student_id=user.id, module_id=module.id, score=score)
+    # Spaced repetition: schedule next review based on performance
+    if pct >= 90:
+        review_days = 14       # Almost perfect → 2 weeks
+    elif pct >= 70:
+        review_days = 7        # Good → 1 week
+    elif pct >= 50:
+        review_days = 3        # OK → 3 days
+    else:
+        review_days = 1        # Struggling → tomorrow
+
+    next_review = datetime.utcnow() + timedelta(days=review_days)
+
+    attempt = QuizAttempt(
+        student_id=user.id, module_id=module.id,
+        score=score, max_score=total, pct=pct,
+        next_review_at=next_review
+    )
     db.session.add(attempt)
 
     enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=module.course_id).first()
@@ -325,7 +370,11 @@ def api_quiz_submit(user):
         enrollment.completed_modules = done + 1
 
     db.session.commit()
-    return jsonify({'score': score, 'total': total, 'pct': pct, 'results': results})
+    return jsonify({
+        'score': score, 'total': total, 'pct': pct, 'results': results,
+        'next_review_days': review_days,
+        'next_review_date': next_review.strftime('%d.%m.%Y'),
+    })
 
 
 # ── Lehrer-Bereich ─────────────────────────────
@@ -611,59 +660,101 @@ def ki_lehrer_api(user):
     # Generate slide from the actual speech text (not the greeting)
     slide_title  = ''
     slide_points = []
+    slide_source = ''
     if not is_greeting and speech and not speech.startswith('Fehler'):
         slide_title, slide_points = generate_slide_from_speech(speech, module_title)
+        # First sentence of speech as source anchor for the slide
+        first_sentence = speech.split('.')[0].strip()
+        slide_source = first_sentence[:140] + ('…' if len(first_sentence) > 140 else '')
 
-    return jsonify({'response': speech, 'slide_title': slide_title, 'slide_points': slide_points})
+    return jsonify({'response': speech, 'slide_title': slide_title,
+                    'slide_points': slide_points, 'slide_source': slide_source})
 
 
 @app.route('/api/tts-proxy', methods=['POST'])
 def tts_proxy():
-    """Generate TTS audio via edge-tts (Microsoft Neural TTS) for TalkingHead lip sync.
+    """TTS via ElevenLabs for TalkingHead lip sync.
 
-    TalkingHead sends:
-      { "input": {"text": "..."}, "voice": {...}, "audioConfig": {...} }
-    and expects back:
-      { "audioContent": "<base64-encoded MP3>" }
+    TalkingHead sends:  { "input": {"ssml": "..."}, "voice": {...}, "audioConfig": {...} }
+    We return:          { "audioContent": "<base64 MP3>", "timepoints": [] }
     """
-    import asyncio, base64, io, json as _j
-    try:
-        import edge_tts
-    except ImportError:
-        return _j.dumps({'error': 'edge-tts not installed'}), 503, {'Content-Type': 'application/json'}
+    import re as _re, base64, json as _j, urllib.request, urllib.error
+
+    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
+    if not api_key:
+        return _j.dumps({'error': 'ELEVENLABS_API_KEY not set'}), 503, {'Content-Type': 'application/json'}
 
     data = request.get_json(silent=True) or {}
     inp  = data.get('input') or {}
-    # TalkingHead sends SSML (not plain text) — strip XML tags to get speakable text
     raw  = inp.get('ssml', '') or inp.get('text', '')
-    import re as _re
-    text = _re.sub(r'<[^>]+>', ' ', raw)   # strip all XML/SSML tags
+    text = _re.sub(r'<[^>]+>', ' ', raw)
     text = _re.sub(r'\s+', ' ', text).strip()
     if not text:
         return _j.dumps({'error': 'no text'}), 400, {'Content-Type': 'application/json'}
 
-    voice = 'de-DE-KatjaNeural'
+    voice_id = 'Xb7hH8MSUJpSbSDYk0k2'   # ElevenLabs "Alice" – multilingual, good German
+    payload  = _j.dumps({
+        'text':     text,
+        'model_id': 'eleven_multilingual_v2',
+        'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2},
+    }).encode('utf-8')
 
-    async def _synthesize():
-        buf = io.BytesIO()
-        comm = edge_tts.Communicate(text, voice)
-        async for chunk in comm.stream():
-            if chunk['type'] == 'audio':
-                buf.write(chunk['data'])
-        return buf.getvalue()
+    req = urllib.request.Request(
+        f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
+        data=payload, method='POST'
+    )
+    req.add_header('xi-api-key', api_key)
+    req.add_header('Content-Type', 'application/json')
 
     try:
-        audio_bytes = asyncio.run(_synthesize())
+        with urllib.request.urlopen(req, timeout=20) as r:
+            audio_bytes = r.read()
+    except urllib.error.HTTPError as e:
+        return e.read(), e.code, {'Content-Type': 'application/json'}
     except Exception as e:
         return _j.dumps({'error': str(e)}), 500, {'Content-Type': 'application/json'}
 
-    if not audio_bytes:
-        return _j.dumps({'error': 'empty audio'}), 500, {'Content-Type': 'application/json'}
-
     encoded = base64.b64encode(audio_bytes).decode('utf-8')
-    # TalkingHead requires a 'timepoints' key (even empty) — accessing data.timepoints[i]
-    # without it throws TypeError internally and silently suppresses the audio.
+    # TalkingHead requires 'timepoints' key — without it crashes internally, silencing audio
     return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, {'Content-Type': 'application/json; charset=utf-8'}
+
+
+@app.route('/api/stt', methods=['POST'])
+def stt_proxy():
+    """Speech-to-text via ElevenLabs Scribe for user voice input."""
+    import json as _j, urllib.request, urllib.error
+
+    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
+    if not api_key:
+        return _j.dumps({'error': 'ELEVENLABS_API_KEY not set'}), 503, {'Content-Type': 'application/json'}
+
+    audio_data = request.get_data()
+    if not audio_data:
+        return _j.dumps({'error': 'no audio'}), 400, {'Content-Type': 'application/json'}
+
+    content_type = request.content_type or 'audio/webm'
+    ext = 'webm' if 'webm' in content_type else 'mp3' if 'mp3' in content_type else 'webm'
+
+    boundary = 'el11boundary'
+    body = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="model_id"\r\n\r\nscribe_v1\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="language_code"\r\n\r\nde\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.{ext}"\r\n'
+        f'Content-Type: {content_type}\r\n\r\n'
+    ).encode('utf-8') + audio_data + f'\r\n--{boundary}--\r\n'.encode('utf-8')
+
+    req = urllib.request.Request('https://api.elevenlabs.io/v1/speech-to-text', data=body, method='POST')
+    req.add_header('xi-api-key', api_key)
+    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            result = _j.loads(r.read())
+            return _j.dumps({'text': result.get('text', '')}), 200, {'Content-Type': 'application/json'}
+    except urllib.error.HTTPError as e:
+        return e.read(), e.code, {'Content-Type': 'application/json'}
+    except Exception as e:
+        return _j.dumps({'error': str(e)}), 500, {'Content-Type': 'application/json'}
 
 
 @app.route('/debug-env')

@@ -8,6 +8,7 @@ from models import db, User, Course, Module, Enrollment, QuizQuestion, QuizAttem
 from services import (init_db, calculate_language_level, calculate_nursing_level,
                       LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response,
                       call_gemini_chat, build_ki_lehrer_system_prompt,
+                      generate_slide_from_speech,
                       generate_ai_quiz, evaluate_ai_answers,
                       generate_language_test_questions, generate_nursing_test_questions)
 
@@ -377,6 +378,25 @@ def teacher_course(user, course_id):
     return render_template('teacher_course.html', course=course, enrollments=enrollments)
 
 
+@app.route('/teacher/course/<int:course_id>/set-current-module', methods=['POST'])
+@login_required(role='teacher')
+def set_current_module(user, course_id):
+    course = Course.query.get_or_404(course_id)
+    if course.owner_id != user.id:
+        flash('Zugriff verweigert.', 'danger')
+        return redirect(url_for('teacher_dashboard'))
+    module_id = request.form.get('module_id', type=int)
+    if module_id:
+        module = Module.query.get_or_404(module_id)
+        course.current_module_id = module.id
+        flash(f'Heutiges Thema gesetzt: "{module.title}"', 'success')
+    else:
+        course.current_module_id = None
+        flash('Heutiges Thema zurückgesetzt.', 'info')
+    db.session.commit()
+    return redirect(url_for('teacher_course', course_id=course_id))
+
+
 @app.route('/teacher/course/<int:course_id>/module/new', methods=['POST'])
 @login_required(role='teacher')
 def add_module(user, course_id):
@@ -519,8 +539,21 @@ def ai_professor_api(user):
 @app.route('/ki-lehrer')
 @login_required(role='student')
 def ki_lehrer(user):
+    from flask import jsonify as _j
     enrolled_courses = [e.course for e in user.enrollments]
-    return render_template('ki_lehrer.html', user=user, enrolled_courses=enrolled_courses)
+    # Pass module content as a dict so Jinja tojson can embed it safely in <script>
+    module_data = {}
+    for course in enrolled_courses:
+        for module in course.modules:
+            module_data[str(module.id)] = {
+                'title': module.title,
+                'course': course.title,
+                'level': course.recommended_level,
+                'content': module.content or module.description or '',
+            }
+    return render_template('ki_lehrer.html', user=user,
+                           enrolled_courses=enrolled_courses,
+                           module_data=module_data)
 
 
 @app.route('/api/ki-lehrer', methods=['POST'])
@@ -540,18 +573,29 @@ def ki_lehrer_api(user):
             module_content = module.content or module.description or ''
             course_title   = module.course.title if module.course else ''
 
+    # Today's topic set by the teacher
+    today_module_title = today_course_title = ''
+    enrolled_courses = [e.course for e in user.enrollments]
+    for course in enrolled_courses:
+        if course.current_module_id:
+            today_mod = Module.query.get(course.current_module_id)
+            if today_mod:
+                today_module_title = today_mod.title
+                today_course_title = course.title
+                break
+
     system = build_ki_lehrer_system_prompt(
         user.first_name, user.language_level,
-        module_title, course_title, module_content
+        module_title, course_title, module_content,
+        today_module_title, today_course_title
     )
 
-    # Welcome without module: brief general greeting
+    # Welcome without module: single short greeting sentence
     if is_greeting and not module_id and not conversation:
         welcome_system = (
-            f"Du bist Professor Wagner, ein freundlicher Pflegepädagoge auf der careLearn-Plattform. "
-            f"Begrüße {user.first_name} herzlich mit 2–3 Sätzen, erkläre kurz dass du als KI-Lehrer "
-            f"Pflegethemen erklären kannst, und fordere sie/ihn auf, oben ein Modul auszuwählen. "
-            f"Sprich {user.first_name} mit Vornamen an. Immer auf Deutsch. Keine Aufzählungen."
+            f"Du bist Professor Wagner. Begrüße {user.first_name} mit genau einem einzigen Satz: "
+            f"'Hallo {user.first_name}, hier ist Prof. Wagner – bitte wähle oben ein Modul aus, um zu starten.' "
+            f"Sage exakt diesen Satz, leicht variiert, auf Deutsch. Kein weiterer Text."
         )
         response_text = call_gemini_chat(welcome_system, [{'role': 'user', 'text': '__WELCOME__'}])
         return jsonify({'response': response_text})
@@ -562,8 +606,64 @@ def ki_lehrer_api(user):
     else:
         contents = [{'role': c['role'], 'text': c['text']} for c in conversation[-20:]]
 
-    response_text = call_gemini_chat(system, contents)
-    return jsonify({'response': response_text})
+    speech = call_gemini_chat(system, contents)
+
+    # Generate slide from the actual speech text (not the greeting)
+    slide_title  = ''
+    slide_points = []
+    if not is_greeting and speech and not speech.startswith('Fehler'):
+        slide_title, slide_points = generate_slide_from_speech(speech, module_title)
+
+    return jsonify({'response': speech, 'slide_title': slide_title, 'slide_points': slide_points})
+
+
+@app.route('/api/tts-proxy', methods=['POST'])
+def tts_proxy():
+    """Generate TTS audio via edge-tts (Microsoft Neural TTS) for TalkingHead lip sync.
+
+    TalkingHead sends:
+      { "input": {"text": "..."}, "voice": {...}, "audioConfig": {...} }
+    and expects back:
+      { "audioContent": "<base64-encoded MP3>" }
+    """
+    import asyncio, base64, io, json as _j
+    try:
+        import edge_tts
+    except ImportError:
+        return _j.dumps({'error': 'edge-tts not installed'}), 503, {'Content-Type': 'application/json'}
+
+    data = request.get_json(silent=True) or {}
+    inp  = data.get('input') or {}
+    # TalkingHead sends SSML (not plain text) — strip XML tags to get speakable text
+    raw  = inp.get('ssml', '') or inp.get('text', '')
+    import re as _re
+    text = _re.sub(r'<[^>]+>', ' ', raw)   # strip all XML/SSML tags
+    text = _re.sub(r'\s+', ' ', text).strip()
+    if not text:
+        return _j.dumps({'error': 'no text'}), 400, {'Content-Type': 'application/json'}
+
+    voice = 'de-DE-KatjaNeural'
+
+    async def _synthesize():
+        buf = io.BytesIO()
+        comm = edge_tts.Communicate(text, voice)
+        async for chunk in comm.stream():
+            if chunk['type'] == 'audio':
+                buf.write(chunk['data'])
+        return buf.getvalue()
+
+    try:
+        audio_bytes = asyncio.run(_synthesize())
+    except Exception as e:
+        return _j.dumps({'error': str(e)}), 500, {'Content-Type': 'application/json'}
+
+    if not audio_bytes:
+        return _j.dumps({'error': 'empty audio'}), 500, {'Content-Type': 'application/json'}
+
+    encoded = base64.b64encode(audio_bytes).decode('utf-8')
+    # TalkingHead requires a 'timepoints' key (even empty) — accessing data.timepoints[i]
+    # without it throws TypeError internally and silently suppresses the audio.
+    return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, {'Content-Type': 'application/json; charset=utf-8'}
 
 
 @app.route('/debug-env')

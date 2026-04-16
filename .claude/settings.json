@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(curl -sI \"https://readyplayerme.github.io/visage/male.glb\")",
+      "Bash(curl -sI \"https://models.readyplayer.me/64f67f1d43f5b13a1ec84714.glb?morphTargets=ARKit\")",
+      "Bash(curl -sI \"https://models.readyplayer.me/64bfa15f0e72c63d7c3934a6.glb?morphTargets=ARKit,Oculus%20Visemes\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/RobotExpressive/RobotExpressive.glb\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/facecap.glb\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/AnisotropyBarn.glb\")",
+      "Bash(curl -sI \"https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/models/gltf/facecap.glb\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/LeePerrySmith/Map-COL.jpg\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/LeePerrySmith/Map-SPEC.jpg\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/LeePerrySmith/Map-NOR.jpg\")",
+      "Bash(curl -sI \"https://threejs.org/examples/models/gltf/LeePerrySmith/Infinite-Level_02_Tangent_Space_400_edit.jpg\")",
+      "Bash(venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('app.py',doraise=True\\); py_compile.compile\\('services.py',doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import edge_tts; print\\('edge-tts OK'\\)\")",
+      "Bash(python -c \"import pyttsx3; print\\('pyttsx3 OK'\\)\")",
+      "Bash(python -c \"import gtts; print\\('gTTS OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(c:/Users/DominikSchulz/source/repos/careLearn/.venv/Scripts/python.exe app.py)"
+    ]
+  }
+}

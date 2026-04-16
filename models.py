@@ -32,11 +32,14 @@ class Course(db.Model):
     summary = db.Column(db.Text, nullable=False)
     recommended_level = db.Column(db.String(16), default='A1')
     owner_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    current_module_id = db.Column(db.Integer, db.ForeignKey('module.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     owner = db.relationship('User', back_populates='courses')
-    modules = db.relationship('Module', back_populates='course', cascade='all, delete-orphan', order_by='Module.position')
+    modules = db.relationship('Module', back_populates='course', cascade='all, delete-orphan',
+                              foreign_keys='Module.course_id', order_by='Module.position')
     enrollments = db.relationship('Enrollment', back_populates='course', cascade='all, delete-orphan')
+    current_module = db.relationship('Module', foreign_keys='Course.current_module_id', post_update=True)
 
 class Module(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -48,7 +51,7 @@ class Module(db.Model):
     position = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    course = db.relationship('Course', back_populates='modules')
+    course = db.relationship('Course', back_populates='modules', foreign_keys='Module.course_id')
     quiz_questions = db.relationship('QuizQuestion', back_populates='module', cascade='all, delete-orphan')
     quiz_attempts = db.relationship('QuizAttempt', back_populates='module', cascade='all, delete-orphan')
 

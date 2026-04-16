@@ -37,12 +37,29 @@
 </div>
 
 {% for module in course.modules %}
-<section class="card">
+<section class="card{% if course.current_module_id == module.id %} card-today{% endif %}">
   <div class="card-header-row">
     <div>
-      <h2>{{ loop.index }}. {{ module.title }}</h2>
+      <h2>{{ loop.index }}. {{ module.title }}
+        {% if course.current_module_id == module.id %}
+          <span class="badge badge-today">📅 Heutiges Thema</span>
+        {% endif %}
+      </h2>
       <span class="badge">{{ module.module_type }}</span>
       <span class="meta"> · {{ module.quiz_questions|length }} Fragen</span>
+    </div>
+    <div>
+      {% if course.current_module_id != module.id %}
+      <form method="post" action="{{ url_for('set_current_module', course_id=course.id) }}" style="display:inline">
+        <input type="hidden" name="module_id" value="{{ module.id }}">
+        <button class="button button-sm" type="submit" title="Als heutiges Unterrichtsthema setzen">📅 Heute</button>
+      </form>
+      {% else %}
+      <form method="post" action="{{ url_for('set_current_module', course_id=course.id) }}" style="display:inline">
+        <input type="hidden" name="module_id" value="">
+        <button class="button button-sm button-secondary" type="submit" title="Heutiges Thema zurücksetzen">✕ Zurücksetzen</button>
+      </form>
+      {% endif %}
     </div>
   </div>
 

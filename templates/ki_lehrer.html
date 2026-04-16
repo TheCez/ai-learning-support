@@ -1,5 +1,19 @@
 {% extends 'base.html' %}
 {% block content %}
+
+<!-- importmap MUST come before any <script type="module"> -->
+<script type="importmap">
+{
+  "imports": {
+    "three":          "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/":  "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "talkinghead":    "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/modules/talkinghead.mjs"
+  }
+}
+</script>
+
+<script>window._klModules = {{ module_data | tojson }};</script>
+
 <div class="kl-shell">
 
   <!-- ── TOP BAR ───────────────────────────── -->
@@ -11,12 +25,10 @@
         {% for course in enrolled_courses %}
           <optgroup label="{{ course.title }}">
             {% for module in course.modules %}
-              <option
-                value="{{ module.id }}"
-                data-title="{{ module.title | e }}"
-                data-course="{{ course.title | e }}"
-                data-level="{{ course.recommended_level }}"
-                data-content="{{ (module.content or module.description or '') | tojson }}">
+              <option value="{{ module.id }}"
+                      data-title="{{ module.title | e }}"
+                      data-course="{{ course.title | e }}"
+                      data-level="{{ course.recommended_level | e }}">
                 {{ module.title }}
               </option>
             {% endfor %}
@@ -37,17 +49,14 @@
     <div class="kl-left">
       <div class="kl-avatar-section">
         <div class="kl-avatar-wrap" id="kl-avatar-wrap">
-          <div class="kl-avatar-ring kl-ring-3"></div>
-          <div class="kl-avatar-ring kl-ring-2"></div>
-          <div class="kl-avatar-ring kl-ring-1"></div>
-          <div class="kl-avatar-circle">🎓</div>
+          <div id="kl-avatar-container" style="width:100%;height:100%;"></div>
+          <div class="kl-avatar-fallback" id="kl-avatar-fallback">🎓</div>
         </div>
         <div class="kl-professor-name">Prof. Wagner</div>
         <div class="kl-speaking-label" id="kl-speaking-label">
           <span class="kl-dot"></span><span class="kl-dot"></span><span class="kl-dot"></span>
         </div>
       </div>
-
       <div class="kl-chat" id="kl-chat">
         <div class="kl-placeholder" id="kl-placeholder">
           <p>👆 Wähle oben ein Modul aus,<br>um den Unterricht zu starten.</p>
@@ -55,21 +64,50 @@
       </div>
     </div>
 
-    <!-- RIGHT: Slide / Whiteboard -->
+    <!-- RIGHT: PowerPoint-style Slides -->
     <div class="kl-right">
-      <div class="kl-slide" id="kl-slide">
-        <div class="kl-slide-placeholder" id="kl-slide-placeholder">
-          <div class="kl-slide-icon">📋</div>
-          <p>Hier erscheint der Modulinhalt,<br>sobald du ein Modul auswählst.</p>
+      <div class="kl-ppt-shell" id="kl-ppt-shell">
+
+        <!-- Placeholder (before module selected) -->
+        <div class="kl-ppt-placeholder" id="kl-ppt-placeholder">
+          <div class="kl-ppt-placeholder-icon">📊</div>
+          <p>Wähle ein Modul – dann erscheinen hier die Lernfolien.</p>
         </div>
-        <div class="kl-slide-content hidden" id="kl-slide-content">
-          <div class="kl-slide-header">
-            <div class="kl-slide-course-tag" id="kl-slide-course-tag"></div>
-            <h2 class="kl-slide-title" id="kl-slide-title"></h2>
-            <span class="badge" id="kl-slide-level"></span>
+
+        <!-- Slide stage -->
+        <div class="kl-ppt-stage hidden" id="kl-ppt-stage">
+
+          <!-- Module bar -->
+          <div class="kl-ppt-modulebar">
+            <span class="kl-ppt-course" id="kl-ppt-course"></span>
+            <span class="kl-ppt-module-title" id="kl-ppt-module-title"></span>
+            <span class="badge kl-ppt-level" id="kl-ppt-level"></span>
           </div>
-          <div class="kl-slide-body" id="kl-slide-body"></div>
+
+          <!-- Slide viewport -->
+          <div class="kl-ppt-viewport" id="kl-ppt-viewport">
+            <div class="kl-ppt-slide" id="kl-ppt-slide">
+              <div class="kl-ppt-slide-top">
+                <div class="kl-ppt-slide-num" id="kl-ppt-slide-num">1 / 1</div>
+              </div>
+              <div class="kl-ppt-slide-body">
+                <h2 class="kl-ppt-heading" id="kl-ppt-heading"></h2>
+                <ul class="kl-ppt-points" id="kl-ppt-points"></ul>
+              </div>
+              <div class="kl-ppt-slide-footer">
+                <span class="kl-ppt-footer-text">careLearn · Prof. Wagner</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Navigation -->
+          <div class="kl-ppt-nav">
+            <button class="kl-ppt-nav-btn" id="kl-prev-btn" onclick="klPrevSlide()" disabled>‹ Zurück</button>
+            <div class="kl-ppt-dots" id="kl-ppt-dots"></div>
+            <button class="kl-ppt-nav-btn" id="kl-next-btn" onclick="klNextSlide()" disabled>Weiter ›</button>
+          </div>
         </div>
+
       </div>
     </div>
 
@@ -78,7 +116,9 @@
   <!-- ── INPUT BAR ─────────────────────────── -->
   <div class="kl-input-bar">
     <div class="kl-input-inner">
-      <button class="kl-mic-btn" id="kl-mic-btn" title="Mikrofon starten – bleibt aktiv bis du stoppst" onclick="klToggleMic()" disabled>🎤</button>
+      <button class="kl-mic-btn" id="kl-mic-btn"
+              title="Mikrofon – einmal drücken, bleibt aktiv"
+              onclick="klToggleMic()" disabled>🎤</button>
       <input class="kl-text-input" id="kl-text-input" type="text"
              placeholder="Antwort eingeben oder Frage stellen …" disabled
              onkeydown="if(event.key==='Enter') klSend()">
@@ -87,12 +127,14 @@
     <div class="kl-mic-status hidden" id="kl-mic-status">
       <span class="kl-continuous-indicator" id="kl-cont-indicator"></span>
       🎙️ Höre zu …
-      <button class="kl-stop-cont-btn" id="kl-stop-cont-btn" onclick="klStopContinuous()" title="Dauermikrofon stoppen">⏹ Stop</button>
+      <button class="kl-stop-cont-btn" id="kl-stop-cont-btn"
+              onclick="klStopContinuous()">⏹ Stop</button>
     </div>
   </div>
 
 </div><!-- /.kl-shell -->
 
+<!-- ═══════════════════════════════════════════ -->
 <script>
 // ── State ──────────────────────────────────────
 let klConversation   = [];
@@ -101,7 +143,74 @@ let klIsLoading      = false;
 let klRecognition    = null;
 let klIsRecording    = false;
 let klAutoSpeak      = true;
-let klContinuousMode = false;   // after first mic press, keep looping
+let klContinuousMode = false;
+
+// ── Slides ────────────────────────────────────
+let klSlides    = [];   // [{title, points}]
+let klSlideIdx  = -1;
+
+function klAddSlide(title, points) {
+  if (!title && (!points || !points.length)) return;
+  klSlides.push({ title: title || '', points: points || [] });
+  klSlideIdx = klSlides.length - 1;
+  klRenderCurrentSlide(true);
+}
+
+function klRenderCurrentSlide(animate) {
+  if (klSlides.length === 0) return;
+  const slide = klSlides[klSlideIdx];
+  const slideEl = document.getElementById('kl-ppt-slide');
+
+  if (animate) {
+    slideEl.classList.remove('kl-slide-in');
+    void slideEl.offsetWidth; // reflow
+    slideEl.classList.add('kl-slide-in');
+  }
+
+  document.getElementById('kl-ppt-heading').textContent = slide.title;
+  const ul = document.getElementById('kl-ppt-points');
+  ul.innerHTML = '';
+  (slide.points || []).forEach((pt, i) => {
+    const li = document.createElement('li');
+    li.className = 'kl-ppt-point';
+    li.style.animationDelay = (i * 0.14) + 's';
+    // Bold the term before the colon
+    const colon = pt.indexOf(':');
+    if (colon > 0 && colon < 40) {
+      li.innerHTML = '<strong>' + escH(pt.slice(0, colon)) + '</strong>: ' + escH(pt.slice(colon + 1).trim());
+    } else {
+      li.textContent = pt;
+    }
+    ul.appendChild(li);
+  });
+
+  // Slide number
+  document.getElementById('kl-ppt-slide-num').textContent =
+    (klSlideIdx + 1) + ' / ' + klSlides.length;
+
+  // Dots
+  const dots = document.getElementById('kl-ppt-dots');
+  dots.innerHTML = '';
+  klSlides.forEach((_, i) => {
+    const d = document.createElement('span');
+    d.className = 'kl-ppt-dot' + (i === klSlideIdx ? ' active' : '');
+    d.onclick = () => { klSlideIdx = i; klRenderCurrentSlide(true); };
+    dots.appendChild(d);
+  });
+
+  document.getElementById('kl-prev-btn').disabled = klSlideIdx <= 0;
+  document.getElementById('kl-next-btn').disabled = klSlideIdx >= klSlides.length - 1;
+}
+
+function klPrevSlide() {
+  if (klSlideIdx > 0) { klSlideIdx--; klRenderCurrentSlide(true); }
+}
+function klNextSlide() {
+  if (klSlideIdx < klSlides.length - 1) { klSlideIdx++; klRenderCurrentSlide(true); }
+}
+function escH(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
 // ── Auto-welcome on page load ──────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -114,7 +223,7 @@ window.addEventListener('DOMContentLoaded', () => {
   .then(r => r.json())
   .then(data => {
     klRemoveLoadingBubble();
-    const text = data.response || 'Willkommen! Ich bin Prof. Wagner. Bitte wähle oben ein Modul aus.';
+    const text = data.response || 'Willkommen! Ich bin Prof. Wagner.';
     klConversation.push({role: 'model', text});
     klAddBubble('professor', text);
     if (klAutoSpeak) klSpeak(text);
@@ -129,29 +238,34 @@ window.addEventListener('DOMContentLoaded', () => {
 
 // ── Modul auswählen ────────────────────────────
 function klOnModuleChange(select) {
+  window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
   const opt = select.options[select.selectedIndex];
   if (!opt.value) return;
 
   klModuleId     = parseInt(opt.value);
   klConversation = [];
+  klSlides       = [];
+  klSlideIdx     = -1;
 
-  const title   = opt.dataset.title;
-  const course  = opt.dataset.course;
-  const level   = opt.dataset.level;
-  const content = JSON.parse(opt.dataset.content || '""');
+  const mod    = window._klModules[String(klModuleId)] || {};
+  const title  = mod.title  || opt.dataset.title  || '';
+  const course = mod.course || opt.dataset.course || '';
+  const level  = mod.level  || opt.dataset.level  || '';
 
-  document.getElementById('kl-slide-course-tag').textContent = course;
-  document.getElementById('kl-slide-title').textContent      = title;
-  document.getElementById('kl-slide-level').textContent      = level;
-  document.getElementById('kl-slide-body').innerHTML         = klFormatContent(content);
-  document.getElementById('kl-slide-placeholder').classList.add('hidden');
-  document.getElementById('kl-slide-content').classList.remove('hidden');
+  document.getElementById('kl-ppt-course').textContent       = course;
+  document.getElementById('kl-ppt-module-title').textContent = title;
+  document.getElementById('kl-ppt-level').textContent        = level;
+  document.getElementById('kl-ppt-placeholder').classList.add('hidden');
+  document.getElementById('kl-ppt-stage').classList.remove('hidden');
+  document.getElementById('kl-ppt-points').innerHTML = '';
+  document.getElementById('kl-ppt-heading').textContent = '';
+  document.getElementById('kl-ppt-dots').innerHTML = '';
+  document.getElementById('kl-ppt-slide-num').textContent = '– / –';
 
-  const chat = document.getElementById('kl-chat');
-  chat.innerHTML = '';
-
+  document.getElementById('kl-chat').innerHTML = '';
   klSetInputEnabled(false);
   klShowLoadingBubble();
+
   fetch('/api/ki-lehrer', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -163,6 +277,8 @@ function klOnModuleChange(select) {
     const text = data.response || 'Hallo! Ich bin bereit.';
     klConversation.push({role: 'model', text});
     klAddBubble('professor', text);
+    if (data.slide_title || (data.slide_points && data.slide_points.length))
+      klAddSlide(data.slide_title, data.slide_points);
     if (klAutoSpeak) klSpeak(text);
     klSetInputEnabled(true);
   })
@@ -175,6 +291,7 @@ function klOnModuleChange(select) {
 
 // ── Nachricht senden ───────────────────────────
 function klSend() {
+  window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
   const input = document.getElementById('kl-text-input');
   const text  = input.value.trim();
   if (!text || klIsLoading || !klModuleId) return;
@@ -182,7 +299,6 @@ function klSend() {
   input.value = '';
   klIsLoading = true;
   klSetInputEnabled(false);
-
   klConversation.push({role: 'user', text});
   klAddBubble('student', text);
   klShowLoadingBubble();
@@ -190,10 +306,7 @@ function klSend() {
   fetch('/api/ki-lehrer', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      module_id: klModuleId,
-      conversation: klConversation.slice(-20)
-    })
+    body: JSON.stringify({ module_id: klModuleId, conversation: klConversation.slice(-20) })
   })
   .then(r => r.json())
   .then(data => {
@@ -201,6 +314,8 @@ function klSend() {
     const resp = data.response || '…';
     klConversation.push({role: 'model', text: resp});
     klAddBubble('professor', resp);
+    if (data.slide_title || (data.slide_points && data.slide_points.length))
+      klAddSlide(data.slide_title, data.slide_points);
     if (klAutoSpeak) klSpeak(resp);
     else if (klContinuousMode) setTimeout(klStartMic, 400);
     klIsLoading = false;
@@ -220,19 +335,16 @@ function klAddBubble(role, text) {
   const chat = document.getElementById('kl-chat');
   const wrap = document.createElement('div');
   wrap.className = `kl-bubble-wrap kl-bubble-${role}`;
-
   if (role === 'professor') {
     const av = document.createElement('div');
     av.className = 'kl-bubble-avatar';
     av.textContent = '🎓';
     wrap.appendChild(av);
   }
-
   const bubble = document.createElement('div');
   bubble.className = 'kl-bubble';
   bubble.innerHTML = text.replace(/\n/g, '<br>');
   wrap.appendChild(bubble);
-
   chat.appendChild(wrap);
   chat.scrollTop = chat.scrollHeight;
 }
@@ -253,97 +365,56 @@ function klShowLoadingBubble() {
   chat.appendChild(wrap);
   chat.scrollTop = chat.scrollHeight;
 }
-
 function klRemoveLoadingBubble() {
   const el = document.getElementById('kl-loading-bubble');
   if (el) el.remove();
 }
 
-// ── Folien-Formatierung ────────────────────────
-function klFormatContent(text) {
-  if (!text || !text.trim()) return '<p class="kl-no-content">Kein Lerntext hinterlegt.</p>';
-  return text.split(/\n\n+/).filter(p => p.trim()).map(para => {
-    const lines = para.trim().split('\n');
-    const firstLine = lines[0].trim();
-    const isHeading = firstLine.length < 60 && !firstLine.endsWith('.') && lines.length > 1;
-    if (isHeading) {
-      const rest = lines.slice(1).join(' ').trim();
-      return `<div class="kl-slide-section"><h3>${firstLine}</h3><p>${rest}</p></div>`;
-    }
-    return `<div class="kl-slide-section"><p>${lines.join(' ')}</p></div>`;
-  }).join('');
-}
-
 // ── Spracheingabe ──────────────────────────────
-// First press → enable continuous mode and start mic.
-// Mic auto-restarts after professor finishes speaking.
-// Press again → stop & disable continuous mode.
 function klToggleMic() {
-  if (klIsRecording) {
-    klStopContinuous();
-    return;
-  }
+  window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
+  if (klIsRecording) { klStopContinuous(); return; }
   klContinuousMode = true;
   klUpdateMicUI();
   klStartMic();
 }
-
 function klStartMic() {
   if (klIsRecording || klIsLoading) return;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { alert('Spracherkennung nur in Chrome/Edge verfügbar.'); return; }
-
   klRecognition = new SR();
   klRecognition.lang = 'de-DE';
   klRecognition.interimResults = true;
   klRecognition.continuous = false;
-
   klRecognition.onstart = () => {
-    klIsRecording = true;
-    klUpdateMicUI();
+    klIsRecording = true; klUpdateMicUI();
     document.getElementById('kl-mic-status').classList.remove('hidden');
     window.speechSynthesis && window.speechSynthesis.cancel();
   };
-
   klRecognition.onresult = (e) => {
     const t = Array.from(e.results).map(r => r[0].transcript).join('');
     document.getElementById('kl-text-input').value = t;
-    if (e.results[e.results.length - 1].isFinal) {
-      klStopMic();
-      klSend();
-    }
+    if (e.results[e.results.length-1].isFinal) { klStopMic(); klSend(); }
   };
-
   klRecognition.onerror = (e) => {
     klStopMic();
-    if (e.error === 'not-allowed') {
-      klContinuousMode = false;
-      klUpdateMicUI();
-      alert('Mikrofon-Zugriff verweigert. Bitte in den Browser-Einstellungen erlauben.');
-    }
+    if (e.error === 'not-allowed') { klContinuousMode = false; klUpdateMicUI(); alert('Mikrofon verweigert.'); }
   };
-
-  klRecognition.onend = () => { klStopMic(); };
+  klRecognition.onend = () => klStopMic();
   klRecognition.start();
 }
-
 function klStopMic() {
   klIsRecording = false;
-  if (klRecognition) { try { klRecognition.stop(); } catch(e) {} klRecognition = null; }
+  if (klRecognition) { try { klRecognition.stop(); } catch(e){} klRecognition = null; }
   klUpdateMicUI();
-  if (!klContinuousMode) {
-    document.getElementById('kl-mic-status').classList.add('hidden');
-  }
+  if (!klContinuousMode) document.getElementById('kl-mic-status').classList.add('hidden');
 }
-
 function klStopContinuous() {
-  klContinuousMode = false;
-  klIsRecording = false;
-  if (klRecognition) { try { klRecognition.stop(); } catch(e) {} klRecognition = null; }
+  klContinuousMode = false; klIsRecording = false;
+  if (klRecognition) { try { klRecognition.stop(); } catch(e){} klRecognition = null; }
   klUpdateMicUI();
   document.getElementById('kl-mic-status').classList.add('hidden');
 }
-
 function klUpdateMicUI() {
   const btn  = document.getElementById('kl-mic-btn');
   const ind  = document.getElementById('kl-cont-indicator');
@@ -362,27 +433,19 @@ function klUpdateMicUI() {
 }
 
 // ── Sprachausgabe ──────────────────────────────
-function klSpeak(text) {
-  if (!window.speechSynthesis) {
-    if (klContinuousMode) setTimeout(klStartMic, 400);
-    return;
-  }
+// Web Speech API fallback (active until TalkingHead overrides window.klSpeak)
+window.klSpeakFallback = function(text) {
+  if (!window.speechSynthesis) { if (klContinuousMode) setTimeout(klStartMic, 400); return; }
   window.speechSynthesis.cancel();
-
-  const utt   = new SpeechSynthesisUtterance(text);
-  utt.lang    = 'de-DE';
-  utt.rate    = 0.92;
-  utt.pitch   = 1.05;
-
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'de-DE'; utt.rate = 0.92; utt.pitch = 1.05;
   const voices  = speechSynthesis.getVoices();
   const deVoice = voices.find(v => v.lang.startsWith('de') && !v.name.includes('Google'))
                || voices.find(v => v.lang.startsWith('de'));
   if (deVoice) utt.voice = deVoice;
-
   utt.onstart = () => klSetSpeaking(true);
   utt.onend   = () => {
     klSetSpeaking(false);
-    // Auto-restart mic after professor finishes speaking
     if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 400);
   };
   utt.onerror = () => {
@@ -390,26 +453,94 @@ function klSpeak(text) {
     if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 600);
   };
   speechSynthesis.speak(utt);
-}
-
+};
+// TalkingHead module overrides this via window.klSpeak once loaded
+function klSpeak(text) { window.klSpeakFallback(text); }
+// State getter for the ES module (let vars are not on window)
+window.klGetState = () => ({ continuousMode: klContinuousMode, isLoading: klIsLoading });
 function klSetSpeaking(on) {
   const wrap  = document.getElementById('kl-avatar-wrap');
   const label = document.getElementById('kl-speaking-label');
   if (on) { wrap.classList.add('kl-speaking');    label.classList.add('visible'); }
   else    { wrap.classList.remove('kl-speaking'); label.classList.remove('visible'); }
 }
-
-// ── UI Helpers ─────────────────────────────────
 function klSetInputEnabled(on) {
   document.getElementById('kl-text-input').disabled = !on;
   document.getElementById('kl-send-btn').disabled   = !on;
   document.getElementById('kl-mic-btn').disabled    = !on;
 }
-
-// Preload voices (Chrome loads async)
 if (window.speechSynthesis) {
   speechSynthesis.getVoices();
   speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
 }
+</script>
+
+<!-- ── TalkingHead – realistic avatar with phoneme lip sync ── -->
+<script type="module">
+import { TalkingHead } from 'talkinghead';
+
+(async () => {
+  const container  = document.getElementById('kl-avatar-container');
+  const fallbackEl = document.getElementById('kl-avatar-fallback');
+  if (!container) return;
+
+  try {
+    const head = new TalkingHead(container, {
+      ttsEndpoint:         '/api/tts-proxy',
+      ttsApikey:           '',
+      lipsyncModules:      ['en', 'fi'],
+      cameraView:          'upper',
+      modelFPS:            30,
+      mixerGainSpeech:     3,
+      mixerGainBackground: 0,
+    });
+
+    await head.showAvatar({
+      url:         'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/avatars/brunette.glb',
+      body:        'F',
+      avatarMood:  'neutral',
+      ttsLang:     'de-DE',
+      ttsVoice:    'de-DE-Standard-C',
+      ttsRate:     0.92,
+      lipsyncLang: 'fi',
+    });
+
+    if (fallbackEl) fallbackEl.style.display = 'none';
+
+    // Expose AudioContext resume so the regular script can unlock it on user gestures.
+    // Browsers suspend AudioContext until a user gesture happens — this must be called
+    // synchronously inside a click/change handler (before any async fetch).
+    window.klResumeAudio = () => {
+      if (head.audioCtx && head.audioCtx.state !== 'running') {
+        head.audioCtx.resume();
+      }
+    };
+
+    // Override global klSpeak – TalkingHead handles TTS + lip sync together
+    window.klSpeak = async function(text) {
+      if (!text) return;
+      // Ensure AudioContext is running before queuing audio
+      if (head.audioCtx && head.audioCtx.state !== 'running') {
+        try { await head.audioCtx.resume(); } catch(e) {}
+      }
+      window.klSetSpeaking(true);
+      try {
+        await head.speakText(text);
+      } catch (err) {
+        console.warn('TalkingHead TTS error, falling back to Web Speech:', err);
+        window.klSpeakFallback(text);
+        return;
+      }
+      window.klSetSpeaking(false);
+      const st = window.klGetState && window.klGetState();
+      if (st && st.continuousMode && !st.isLoading) {
+        setTimeout(() => window.klStartMic && window.klStartMic(), 400);
+      }
+    };
+
+  } catch (err) {
+    console.error('TalkingHead init failed, Web Speech API remains active:', err);
+  }
+})();
 </script>
 {% endblock %}

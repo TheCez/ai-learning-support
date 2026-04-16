@@ -12,7 +12,10 @@
       "Bash(del /F instance\\\\\\\\carelearn.db)",
       "Bash(cmd.exe /c \"taskkill /F /IM python.exe 2>nul & timeout /t 2 /nobreak >nul & del /F instance\\\\\\\\carelearn.db\")",
       "Bash(venv/Scripts/python.exe -c ' *)",
-      "Bash(cmd.exe /c \"taskkill /F /IM python.exe 2>nul\")"
+      "Bash(cmd.exe /c \"taskkill /F /IM python.exe 2>nul\")",
+      "Bash(venv/Scripts/python.exe -m pip install pypdf)",
+      "Bash(venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('services.py', doraise=True\\); py_compile.compile\\('app.py', doraise=True\\); py_compile.compile\\('models.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('models.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }

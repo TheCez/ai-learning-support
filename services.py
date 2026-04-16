@@ -385,7 +385,9 @@ def call_gemini_chat(system_instruction: str, contents_list: list) -> str:
 
 def build_ki_lehrer_system_prompt(first_name: str, language_level: str,
                                    module_title: str, course_title: str,
-                                   module_content: str) -> str:
+                                   module_content: str,
+                                   today_module_title: str = '',
+                                   today_course_title: str = '') -> str:
     level_desc = {
         'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, nur Grundvokabular – jeden Fachbegriff sofort erklären',
         'A2': 'einfaches Deutsch mit Alltagsausdrücken, kurze klare Sätze',
@@ -406,6 +408,23 @@ Deine Erklärungen MÜSSEN sich auf diesen offiziellen Inhalt beziehen:
 ---
 """
 
+    today_section = ''
+    if today_module_title:
+        t_course = today_course_title or course_title
+        today_section = (
+            f'\n\n## Heutiges Thema (vom Lehrer festgelegt)\n'
+            f'Heute behandeln wir: "{today_module_title}" (Kurs: {t_course}). '
+            'Erwähne dies bei Bedarf und kehre immer wieder zu diesem Thema zurueck. '
+            'Schueler duerfen aber auch nach frueheren Inhalten fragen.'
+        )
+
+    greeting_rule = (
+        'BEGRUESSING (nur bei __GREETING__): Sage NUR: '
+        f'"Hallo {first_name}! Hier ist Prof. Wagner." '
+        '- danach sofort den ersten Kernpunkt des Moduls erlaeutern. '
+        'Keine langen Einleitungen.'
+    )
+
     return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
 Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title}).
 
@@ -419,16 +438,16 @@ Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title})
 {level_desc}. Passe JEDE Antwort strikt an dieses Niveau an.
 
 ## Unterrichtsmethode (strikte Reihenfolge)
-1. BEGRÜSSUNG (nur bei __GREETING__): Herzliche Begrüßung + Thema vorstellen + ersten Kernpunkt erklären
+1. {greeting_rule}
 2. ERKLÄREN: Einen Teilaspekt in 2–3 Sätzen erklären
 3. FRAGEN: Immer mit einer offenen Verständnisfrage enden (keine Ja/Nein-Fragen)
 4. REAGIEREN: Antwort bestätigen/korrigieren, dann nächsten Punkt einführen
 
 ## Regeln
-- Max. 4–5 Sätze pro Antwort (bei Begrüßung max. 6)
+- Max. 4–5 Sätze pro Antwort (bei Begrüßung: exakt 1 Satz + erster Kernpunkt)
 - Jede Antwort endet mit einer Frage (außer bei direkten Faktenfragen)
 - Off-topic-Fragen sanft zurück zum Thema lenken
-- Immer auf Deutsch antworten{module_section}"""
+- Immer auf Deutsch antworten{module_section}{today_section}"""
 
 
 def _strip_md_code(text: str) -> str:
@@ -440,6 +459,41 @@ def _strip_md_code(text: str) -> str:
         if text.rstrip().endswith('```'):
             text = text.rstrip()[:-3]
     return text.strip()
+
+
+def generate_slide_from_speech(speech: str, module_title: str) -> tuple:
+    """Generate a specific slide title + 3 bullet points from the professor's speech."""
+    if not speech or not _load_gemini():
+        return '', []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return '', []
+
+    snippet = speech[:900]
+    context = f'Modul: {module_title}\n' if module_title else ''
+    prompt = (
+        f'Erstelle eine kompakte Lernfolie (wie PowerPoint) fuer diese Erklaerung:\n'
+        f'{context}"{snippet}"\n\n'
+        'Antworte NUR mit validem JSON (kein Markdown, kein anderer Text):\n'
+        '{"titel":"(max 4 Woerter, spezifisch fuer DIESEN Inhalt)",'
+        '"punkte":["Fachbegriff: Erklaerung","Fachbegriff: Erklaerung","Fachbegriff: Erklaerung"]}'
+    )
+
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=220, temperature=0.25)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            data = _json.loads(_strip_md_code(resp.text))
+            titel = data.get('titel', '') or ''
+            punkte = data.get('punkte', []) or []
+            if titel or punkte:
+                return titel, punkte[:3]
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return '', []
 
 
 def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
@@ -637,227 +691,361 @@ def generate_nursing_test_questions() -> list:
 
 
 def _seed_demo_courses(teacher_id: int):
-    """Seed 3 demo nursing courses with rich module content."""
+    """Seed 3 courses directly based on the PDF materials (blutdruck / herz / menschen)."""
     courses_data = [
+        # ── blutdruck.pdf ──────────────────────────────────────────────────
         {
-            'title': 'Vitalzeichen und Monitoring',
-            'summary': 'Grundlagen der Vitalzeichenmessung: Puls, Blutdruck, Atmung, Temperatur und Sauerstoffsättigung sicher erfassen und dokumentieren.',
-            'level': 'A2',
-            'modules': [
-                {
-                    'title': 'Puls und Herzfrequenz messen',
-                    'description': 'Pulsfrequenz, -rhythmus und -qualität korrekt erfassen.',
-                    'content': (
-                        'Der Puls ist die fühlbare Druckwelle des Herzschlags in den Arterien. '
-                        'Beim Erwachsenen liegt der normale Ruhepuls zwischen 60 und 100 Schlägen pro Minute. '
-                        'Ein Puls unter 60/min heißt Bradykardie, über 100/min Tachykardie.\n\n'
-                        'Messstellen\n'
-                        'Gemessen wird der Puls meist an der A. radialis (Handgelenk), A. carotis (Hals) '
-                        'oder A. femoralis. Bei der Pulsmessung werden Frequenz, Rhythmus, Qualität '
-                        '(kräftig/schwach) und Gleichmäßigkeit beurteilt.\n\n'
-                        'Durchführung\n'
-                        'Die Messdauer beträgt mindestens 30 Sekunden (×2) oder bei Unregelmäßigkeiten '
-                        'eine volle Minute. Einflussfaktoren: körperliche Aktivität, Fieber, Schmerzen, '
-                        'Medikamente, emotionaler Stress.\n\n'
-                        'Dokumentation\n'
-                        'Uhrzeit, Messwert, Messpunkt und Besonderheiten (z.B. Unregelmäßigkeiten) '
-                        'werden im Pflegebericht festgehalten.'
-                    ),
-                },
-                {
-                    'title': 'Blutdruckmessung nach Riva-Rocci',
-                    'description': 'Blutdruck korrekt messen, interpretieren und dokumentieren.',
-                    'content': (
-                        'Der Blutdruck beschreibt den Druck des Blutes in den Arterien (Angabe in mmHg). '
-                        'Der systolische Wert (oben) entsteht bei Herzkontraktion, '
-                        'der diastolische (unten) bei Herzerschlaffung. '
-                        'Normwert: 120/80 mmHg. Hypertonie: ≥ 140/90 mmHg. Hypotonie: < 90/60 mmHg.\n\n'
-                        'Messtechnik\n'
-                        'Patient sitzt entspannt, Manschette am Oberarm auf Herzhöhe. '
-                        'Manschette ca. 30 mmHg über dem erwarteten Wert aufpumpen, dann langsam ablassen. '
-                        'Korotkoff-Geräusche: Beginn = systolisch, Verschwinden = diastolisch.\n\n'
-                        'Häufige Fehler\n'
-                        'Falsche Manschettengröße, falsche Armposition, Weißkittel-Effekt, volle Blase. '
-                        'Manschette darf nicht zu locker sitzen (falscher Wert).\n\n'
-                        'Dokumentation\n'
-                        'Messwert, Arm (links/rechts), Körperposition, Uhrzeit und Besonderheiten.'
-                    ),
-                },
-                {
-                    'title': 'Atemfrequenz und Sauerstoffsättigung',
-                    'description': 'Atmung beurteilen und SpO₂ korrekt messen.',
-                    'content': (
-                        'Die Atemfrequenz (AF) ist die Anzahl der Atemzüge pro Minute. '
-                        'Normwert Erwachsene: 12–20/min. Tachypnoe: > 20/min. Bradypnoe: < 12/min.\n\n'
-                        'Messung\n'
-                        'Die AF sollte möglichst unbemerkt gemessen werden (z.B. nach Pulsmessung, '
-                        'Finger noch am Handgelenk). Beurteilung: Frequenz, Tiefe, Rhythmus, Geräusche.\n\n'
-                        'Sauerstoffsättigung (SpO₂)\n'
-                        'Normwert: 95–100 %. Unter 90 % → kritische Hypoxie, sofort handeln! '
-                        'Messung mit Pulsoximeter an Finger oder Ohrläppchen. '
-                        'Störfaktoren: Nagellack, Kälte, Bewegung, periphere Durchblutungsstörungen.\n\n'
-                        'Wichtig\n'
-                        'SpO₂ immer zusammen mit dem klinischen Gesamtbild bewerten.'
-                    ),
-                },
-                {
-                    'title': 'Körpertemperatur messen',
-                    'description': 'Temperaturmessung, Normalwerte und Fieberphasen kennen.',
-                    'content': (
-                        'Die Körpertemperatur zeigt Entzündungsprozesse und Stoffwechselzustand an.\n\n'
-                        'Normwerte je nach Messstelle\n'
-                        'Rektal (goldener Standard): 36,8–37,8 °C. Oral: 0,3–0,5 °C niedriger. '
-                        'Axillär (Achsel): 0,5–1,0 °C niedriger. Tympanal (Ohr): entspricht rektal.\n\n'
-                        'Bewertung\n'
-                        'Fieber: ≥ 38,0 °C. Subfebrile Temperatur: 37,5–37,9 °C. '
-                        'Hypothermie: < 36,0 °C.\n\n'
-                        'Fieberphasen\n'
-                        '1. Anstieg: Kältegefühl, Schüttelfrost. '
-                        '2. Höhepunkt: Hitze, Hautrötung. '
-                        '3. Abfall: Schwitzen.\n\n'
-                        'Pflegemaßnahmen bei Fieber\n'
-                        'Fieberkurve führen, ausreichend Flüssigkeit anbieten, kühle Umgebung, '
-                        'Wadenwickel auf Wunsch, ärztlich verordnete Antipyretika verabreichen.'
-                    ),
-                },
-            ],
-        },
-        {
-            'title': 'Hygiene und Infektionsschutz',
-            'summary': 'Grundlagen der Krankenhaushygiene: Händedesinfektion, Schutzausrüstung und Isolationsmaßnahmen zur Prävention nosokomialer Infektionen.',
+            'title': 'Blutdruckmessung',
+            'summary': (
+                'Basierend auf dem Kursmaterial „Blutdruck" (Philipp Adrian, 2023). '
+                'Grundlagen der Blutdruckmessung nach Riva-Rocci: Physiologie, Messtechniken, '
+                'Normalwerte und korrekte Durchführung.'
+            ),
             'level': 'B1',
             'modules': [
                 {
-                    'title': 'Hygienische Händedesinfektion – 5 Momente',
-                    'description': 'Die 5 WHO-Momente der Händehygiene sicher anwenden.',
+                    'title': 'Geschichte und Definition des Blutdrucks',
+                    'description': 'Erfindung der Blutdruckmessung, Begriffe systolisch/diastolisch, Einheit mmHg.',
                     'content': (
-                        'Die Händedesinfektion ist die wirksamste Einzelmaßnahme zur Prävention '
-                        'nosokomialer Infektionen.\n\n'
-                        'Die 5 WHO-Momente der Händehygiene\n'
-                        '1. VOR Patientenkontakt\n'
-                        '2. VOR aseptischer Tätigkeit (z.B. Verbandwechsel, Injektion)\n'
-                        '3. NACH Kontakt mit potenziell infektiösem Material\n'
-                        '4. NACH Patientenkontakt\n'
-                        '5. NACH Kontakt mit der Patientenumgebung\n\n'
+                        'Geschichte\n'
+                        'Der Blutdruck wurde erstmals durch den italienischen Arzt Scipione Riva-Rocci '
+                        'messbar gemacht (Abkürzung: RR). Gemessen wird der arterielle Blutdruck; '
+                        'die Einheit ist Millimeter Quecksilbersäule (mmHg).\n\n'
+                        'Definition\n'
+                        'Der Blutdruck ist die Kraft, die das zirkulierende Blut auf die Gefäßwände ausübt. '
+                        'Er ist abhängig von der Pumpleistung des Herzens und dem Gefäßwiderstand der Arterien.\n\n'
+                        'Systolisch und diastolisch\n'
+                        'Während der Systole (Auswurfphase) wird Blut in die Arterien gepumpt → '
+                        'systolischer Blutdruck (oberer Wert). '
+                        'Während der Diastole (Erschlaffungsphase) erholt sich das Herz → '
+                        'diastolischer Blutdruck (unterer Wert).'
+                    ),
+                },
+                {
+                    'title': 'Physiologische Grundlagen',
+                    'description': 'Pumpleistung, Gefäßwiderstand und Windkesselfunktion der Aorta.',
+                    'content': (
+                        'Pumpleistung\n'
+                        'Die Pumpleistung variiert je nach Schlagvolumen (ml) und Herzfrequenz (Schläge/min). '
+                        'Bei Hochleistungssportlern ist das Schlagvolumen groß → Herzfrequenz im Ruhezustand niedrig. '
+                        'Unter Belastung steigt die Herzfrequenz → Pumpleistung wird gesteigert. '
+                        'Bei kleinen Kindern ist der Puls höher, da der Sauerstoffbedarf größer ist.\n\n'
+                        'Gefäßwiderstand\n'
+                        'Er ist abhängig vom Durchmesser der Gefäße. '
+                        'Je kleiner der Durchmesser, desto größer der Widerstand → desto höher der Blutdruck. '
+                        'Bei älteren Menschen sind Arterien durch Arteriosklerose verengt → erhöhter Blutdruck.\n\n'
+                        'Windkesselfunktion der Aorta\n'
+                        'Die elastische Aorta dehnt sich während der Systole aus und nimmt Blut auf. '
+                        'In der Diastole zieht sie sich zusammen und sorgt für gleichmäßigen Blutfluss '
+                        'in die peripheren Gefäße.'
+                    ),
+                },
+                {
+                    'title': 'Methoden der Blutdruckmessung',
+                    'description': 'Auskultatorische, palpatorische und oszilloskopische Messmethoden.',
+                    'content': (
+                        'Indirekte (unblutige) Blutdruckmessung\n'
+                        'Der Blutdruck kann mithilfe einer Druckmanschette indirekt gemessen werden: '
+                        'auskultatorisch (Abhorchen), palpatorisch (Tasten) oder oszillatorisch '
+                        '(elektronisches Gerät).\n\n'
+                        'Auskultatorische Methode (Standardverfahren)\n'
+                        'Benötigt: Blutdruckmanschette mit Manometer + Stethoskop. '
+                        'Manschette aufpumpen bis Puls nicht mehr hörbar, dann langsam ablassen. '
+                        'Korotkoff-Geräusche: Erstes Geräusch = systolischer Wert, '
+                        'Verschwinden = diastolischer Wert.\n\n'
+                        'Palpatorische Methode\n'
+                        'Eingesetzt wenn Strömungsgeräusche mit Stethoskop nicht hörbar sind. '
+                        'Radialispuls tasten, Manschette aufpumpen, dann ablassen. '
+                        'Wenn Puls wieder tastbar: = systolischer Wert. Nur systolischer Wert ermittelbar.\n\n'
+                        'Oszilloskopische Methode\n'
+                        'Automatische Geräte für Heimgebrauch. Misst Schwingungen der Arterienwand. '
+                        'Weniger präzise, aber praktisch für Selbstkontrolle.'
+                    ),
+                },
+                {
+                    'title': 'Normalwerte und Blutdruckstörungen',
+                    'description': 'Normwerte, Hypertonie, Hypotonie und altersbedingte Unterschiede.',
+                    'content': (
+                        'Normwerte\n'
+                        'Optimaler Blutdruck: 120/80 mmHg. '
+                        'Normal: < 130/85 mmHg. '
+                        'Hoch-normal: 130–139 / 85–89 mmHg.\n\n'
+                        'Hypertonie (zu hoher Blutdruck)\n'
+                        'Grad 1 (leicht): 140–159 / 90–99 mmHg. '
+                        'Grad 2 (mittel): 160–179 / 100–109 mmHg. '
+                        'Grad 3 (schwer): ≥ 180/110 mmHg. '
+                        'Hypertensiver Notfall: > 180 mmHg systolisch mit Organschäden.\n\n'
+                        'Hypotonie (zu niedriger Blutdruck)\n'
+                        'Systolisch < 100 mmHg (Frauen) bzw. < 110 mmHg (Männer). '
+                        'Symptome: Schwindel, Benommenheit, Ohnmacht. '
+                        'Orthostatische Hypotonie: Blutdruckabfall beim Aufstehen.\n\n'
+                        'Altersbedingte Unterschiede\n'
+                        'Bei älteren Menschen ist ein höherer Wert physiologisch. '
+                        'Kinder haben niedrigere Normwerte als Erwachsene.'
+                    ),
+                },
+                {
+                    'title': 'Durchführung und Dokumentation',
+                    'description': 'Korrekte Messtechnik, Fehlerquellen und Dokumentationspflichten.',
+                    'content': (
+                        'Vorbereitung\n'
+                        'Patient sitzt oder liegt entspannt, Arm auf Herzhöhe gelagert. '
+                        'Keine körperliche Aktivität in den letzten 5 Minuten. '
+                        'Richtige Manschettengröße: breite für adipöse Patienten, '
+                        'schmale für Kinder.\n\n'
                         'Durchführung\n'
-                        '3–5 ml alkoholisches Händedesinfektionsmittel in TROCKENE Hände geben, '
-                        'mindestens 30 Sekunden einreiben. Alle Flächen bearbeiten: '
-                        'Handflächen, Handrücken, Fingerzwischenräume, Fingerkuppen, Daumen.\n\n'
-                        'Wichtig\n'
-                        'Feuchte Hände reduzieren die Wirksamkeit! Handschuhe ersetzen NICHT die '
-                        'Händedesinfektion – auch vor und nach dem Tragen desinfizieren.'
-                    ),
-                },
-                {
-                    'title': 'Persönliche Schutzausrüstung (PSA)',
-                    'description': 'PSA korrekt anlegen, tragen und ausziehen.',
-                    'content': (
-                        'PSA schützt Pflegepersonal und Patienten vor Infektionsübertragung.\n\n'
-                        'Einmalhandschuhe\n'
-                        'Bei Kontakt mit Körperflüssigkeiten, Schleimhäuten oder nicht-intakter Haut. '
-                        'Anlegen nach Händedesinfektion. Ausziehen: Außenseite nicht berühren, sofort entsorgen.\n\n'
-                        'Masken\n'
-                        'Mund-Nasen-Schutz (MNS): Schutz vor Tröpfchenübertragung, bedeckt Mund und Nase eng. '
-                        'FFP2/FFP3: bei aerogener Übertragung (z.B. Tuberkulose, COVID-19).\n\n'
-                        'Schutzkittel und Schutzbrille\n'
-                        'Kittel bei Kontaktprecautions und Spritzgefahr. '
-                        'Brille als Spritzschutz für Augen.\n\n'
-                        'Reihenfolge Anlegen (GOWN)\n'
-                        '1. Kittel → 2. Maske → 3. Brille → 4. Handschuhe\n\n'
-                        'Reihenfolge Ausziehen\n'
-                        '1. Handschuhe (kontaminierteste Fläche) → 2. Brille → 3. Kittel → 4. Maske. '
-                        'Nach jedem Schritt Händedesinfektion!'
-                    ),
-                },
-                {
-                    'title': 'Isolationsmaßnahmen',
-                    'description': 'Kontakt-, Tröpfchen- und Aerogenisolation korrekt anwenden.',
-                    'content': (
-                        'Isolationsmaßnahmen verhindern die Ausbreitung von Infektionserregern.\n\n'
-                        'Kontaktisolation (z.B. MRSA, VRE, Durchfall)\n'
-                        'Einzel- oder Kohortenzimmer. PSA (Handschuhe + Kittel) vor Betreten anlegen. '
-                        'Patientenbezogenes Material verwenden. Desinfektion vor dem Verlassen.\n\n'
-                        'Tröpfchenisolation (z.B. Influenza, Meningitis, Keuchhusten)\n'
-                        'MNS für Personal im Abstand < 1 m. Patient trägt MNS beim Transport.\n\n'
-                        'Aerogenisolation (z.B. Tuberkulose, Masern, Windpocken)\n'
-                        'Unterdruckzimmer erforderlich. FFP2/3 für Personal. '
-                        'Patient verlässt Zimmer nur mit MNS.\n\n'
-                        'Standard-Precautions (gelten für ALLE Patienten)\n'
-                        'Händehygiene, PSA bei Kontaminationsrisiko, sichere Entsorgung von Sharps '
-                        '(Spritzen NIEMALS recappen!). Isolationsmaßnahmen im Pflegebericht dokumentieren.'
+                        'Manschette am Oberarm anlegen (2 cm über Ellenbeuge). '
+                        'Auf ca. 30 mmHg über erwartetem Wert aufpumpen. '
+                        'Langsam (2 mmHg/s) ablassen, Korotkoff-Geräusche abhören.\n\n'
+                        'Häufige Fehlerquellen\n'
+                        'Manschette zu locker → falsch niedrige Werte. '
+                        'Arm nicht auf Herzhöhe → Abweichungen ±8 mmHg je 10 cm. '
+                        'Zu schnelles Ablassen → falsch niedrige systolische Werte. '
+                        'Weißkittel-Effekt: Stress erhöht den Blutdruck in der Praxis.\n\n'
+                        'Dokumentation\n'
+                        'Messwert (systolisch/diastolisch), Arm (links/rechts), '
+                        'Körperposition (sitzend/liegend), Uhrzeit, Puls, Besonderheiten.'
                     ),
                 },
             ],
         },
+        # ── herz.pdf ──────────────────────────────────────────────────────
         {
-            'title': 'Wundversorgung und Dekubitus',
-            'summary': 'Wunden fachgerecht beurteilen, versorgen und Dekubitus systematisch verhüten. Grundlagen des TIME-Konzepts und der Druckgeschwürprävention.',
+            'title': 'Anatomie des Herzens',
+            'summary': (
+                'Basierend auf dem Kursmaterial „Anatomie Herz" (Thomas Kruse, 2023). '
+                'Aufbau, Funktion und Kreisläufe des Herzens: Kammern, Klappen, '
+                'Erregungsleitung und Herzzyklus.'
+            ),
+            'level': 'B1',
+            'modules': [
+                {
+                    'title': 'Aufgaben und Lage des Herzens',
+                    'description': 'Das Herz als Hohlmuskel – Aufgaben, Lage im Mediastinum und anatomische Grenzen.',
+                    'content': (
+                        'Aufgaben des Herzens\n'
+                        'Das Herz (Cor) treibt als Hohlmuskel alle Transportvorgänge in den Blutgefäßen an '
+                        '(„zentrale Pumpe"). Es versorgt den Körper mit Sauerstoff und Nährstoffen, '
+                        'transportiert Stoffwechselendprodukte (CO₂) ab und produziert Hormone zur '
+                        'Regulation von Kreislauf und Flüssigkeitshaushalt.\n\n'
+                        'Lage\n'
+                        'Das Herz liegt im Mediastinum (Raum zwischen den Lungen). '
+                        'Größe: etwa so groß wie eine geschlossene Faust. Gewicht: ca. 300 g '
+                        '(bei Frauen etwas kleiner). '
+                        'Herzspitzenstoß spürbar an der Medioklavicularlinie des 5. ICR '
+                        '(Interkostalraum) – liegt er weiter außen, ist das Herz möglicherweise vergrößert.\n\n'
+                        'Anatomische Grenzen\n'
+                        'Vorne: Rückseite des Brustbeins (Sternum). '
+                        'Seitlich: rechte und linke Lunge. '
+                        'Hinten: Speiseröhre (Ösophagus). '
+                        'Oben: große Gefäßstämme. Unten: Zwerchfell.'
+                    ),
+                },
+                {
+                    'title': 'Herzaufbau: Vorhöfe, Kammern und Scheidewand',
+                    'description': 'Herzscheidewand, vier Innenräume und ihre Funktion.',
+                    'content': (
+                        'Zwei Herzhälften\n'
+                        'Die Herzscheidewand (Septum) teilt das Herz in zwei Hälften:\n'
+                        'Rechte Herzhälfte: Nimmt sauerstoffarmes Blut auf, pumpt es in den Lungenkreislauf.\n'
+                        'Linke Herzhälfte: Nimmt sauerstoffreiches Blut aus der Lunge auf, '
+                        'presst es über die Aorta in den Körperkreislauf.\n\n'
+                        'Vier Innenräume\n'
+                        'Jede Herzhälfte besteht aus Vorhof (Atrium) + Kammer (Ventrikel):\n'
+                        'Vorhof: Klein und muskelschwach, sammelt Blut ein.\n'
+                        'Kammer: Nimmt Blut aus dem Vorhof auf, pumpt es in Körper oder Lunge.\n\n'
+                        'Herzscheidewand (Septum)\n'
+                        'Vorhofseptum: trennt rechten und linken Vorhof.\n'
+                        'Kammerseptum: trennt rechte und linke Kammer.\n\n'
+                        'Wanddicke\n'
+                        'Linke Kammer: sehr dickwandige Muskulatur (hoher Druck für Körperkreislauf).\n'
+                        'Rechte Kammer: dünnwandiger (geringerer Druck für Lungenkreislauf).'
+                    ),
+                },
+                {
+                    'title': 'Herzklappen',
+                    'description': 'Segel- und Taschenklappen: Funktion, Lage und klinische Bedeutung.',
+                    'content': (
+                        'Funktion der Herzklappen\n'
+                        'Herzklappen sitzen an den Ein- und Ausgängen der Kammern. '
+                        'Sie sind nur in eine Richtung öffenbar (Ventilmechanismus) – '
+                        'bei Gegendruck erfolgt Klappenschluss → verhindert Blutrückfluss.\n\n'
+                        'Segelklappen (zwischen Vorhöfen und Kammern)\n'
+                        'Mitralklappe: trennt linken Vorhof von linker Kammer, 2 Segel '
+                        '(Bikuspidalklappe). '
+                        'Trikuspidalklappe: trennt rechten Vorhof von rechter Kammer, 3 Segel. '
+                        'Verbunden mit Papillarmuskeln über Sehnenfäden → verhindert Zurückschlagen.\n\n'
+                        'Taschenklappen (zwischen Kammern und großen Schlagadern)\n'
+                        'Aortenklappe: zwischen linker Kammer und Aorta. '
+                        'Pulmonalklappe: zwischen rechter Kammer und A. pulmonalis. '
+                        'Taschenförmige Mulden → schließen bei höherem Druck in den Arterien.\n\n'
+                        'Klinische Bedeutung\n'
+                        'Herzklappenfehler: Stenose (Enge, erschwerter Fluss) oder '
+                        'Insuffizienz (undichte Klappe, Blutrückfluss).'
+                    ),
+                },
+                {
+                    'title': 'Herzkreisläufe',
+                    'description': 'Kleiner (Lungen-) und großer (Körper-) Kreislauf.',
+                    'content': (
+                        'Kleiner Kreislauf (Lungenkreislauf)\n'
+                        'Rechtes Herz → Lunge → linkes Herz.\n'
+                        'Rechte Kammer pumpt sauerstoffarmes Blut über die A. pulmonalis in die Lunge. '
+                        'In der Lunge wird CO₂ abgegeben, O₂ aufgenommen. '
+                        'Sauerstoffreiches Blut fließt über Lungenvenen zum linken Vorhof.\n\n'
+                        'Großer Kreislauf (Körperkreislauf)\n'
+                        'Linkes Herz → Körper → rechtes Herz.\n'
+                        'Linke Kammer pumpt sauerstoffreiches Blut über die Aorta in alle Organe. '
+                        'O₂ und Nährstoffe werden abgegeben, CO₂ aufgenommen. '
+                        'Sauerstoffarmes Blut kehrt über Hohlvenen (V. cava) zum rechten Vorhof zurück.\n\n'
+                        'Herzminutenvolumen (HMV)\n'
+                        'HMV = Schlagvolumen × Herzfrequenz. '
+                        'Normwert in Ruhe: ca. 5 Liter/min. '
+                        'Bei Belastung: bis 25 Liter/min.'
+                    ),
+                },
+                {
+                    'title': 'Erregungsleitung und Herzzyklus',
+                    'description': 'Sinusknoten, AV-Knoten, HIS-Bündel und die Phasen des Herzzyklusses.',
+                    'content': (
+                        'Erregungsleitung\n'
+                        'Sinusknoten (Schrittmacher, 60–80/min): im rechten Vorhof, '
+                        'erzeugt elektrischen Impuls. '
+                        'AV-Knoten: verzögert Erregung (Zeit für Ventrikelfüllung). '
+                        'HIS-Bündel → Tawara-Schenkel → Purkinje-Fasern: verteilen Erregung in Ventrikel.\n\n'
+                        'Herzzyklus\n'
+                        'Systole (Anspannungs- + Auswurfphase): '
+                        'Kammern kontrahieren → Blut wird ausgeworfen → Herzklappen öffnen/schließen. '
+                        'Diastole (Erschlaffungs- + Füllungsphase): '
+                        'Kammern entspannen → Blut fließt aus Vorhöfen ein.\n\n'
+                        'EKG-Grundlagen\n'
+                        'P-Welle: Vorhoferregung. '
+                        'QRS-Komplex: Kammererregung (sichtbarer Herzschlag). '
+                        'T-Welle: Kammerrückbildung. '
+                        'Herzfrequenz: 60–100/min normal; < 60 Bradykardie; > 100 Tachykardie.'
+                    ),
+                },
+            ],
+        },
+        # ── menschen.pdf ──────────────────────────────────────────────────
+        {
+            'title': 'Patientenmobilisation',
+            'summary': (
+                'Basierend auf „Menschen bewegen – sicher und gesund" (BGW, 2023). '
+                'Expertenstandard Mobilität in der Pflege, Prävention von Muskel-Skelett-Erkrankungen '
+                'und ergonomische Mobilisationstechniken.'
+            ),
             'level': 'B2',
             'modules': [
                 {
-                    'title': 'Wundbeurteilung nach TIME',
-                    'description': 'Das TIME-Konzept zur systematischen Wundbeurteilung anwenden.',
+                    'title': 'Grundlagen der Mobilität in der Pflege',
+                    'description': 'Bedeutung von Mobilität, Expertenstandard und gesetzliche Grundlagen.',
                     'content': (
-                        'Das TIME-Konzept ist ein standardisiertes Framework zur Wundbeurteilung.\n\n'
-                        'T – Tissue (Wundgrund)\n'
-                        'Beurteilung des Gewebezustands: nekrotisch (schwarz), belegt (gelb), '
-                        'granulierend (rot) oder epithelisierend (rosa). '
-                        'Débridement bei Nekrose und Belag notwendig.\n\n'
-                        'I – Infection/Inflammation (Infektion/Entzündung)\n'
-                        'Lokalzeichen: Rötung, Überwärmung, Schwellung, Schmerz, purulentes Exsudat, Geruch. '
-                        'Systemzeichen: Fieber, erhöhte Entzündungswerte. '
-                        'Wundabstrich bei Infektionsverdacht.\n\n'
-                        'M – Moisture (Feuchtigkeit)\n'
-                        'Optimales Wundmilieu = feucht, nicht nass. '
-                        'Übermäßiges Exsudat → Mazeration des Wundrandes. '
-                        'Zu trockene Wunde → Heilungsverzögerung.\n\n'
-                        'E – Edge (Wundrand)\n'
-                        'Intakte, fortschreitende Epithelisierung = Heilungszeichen. '
-                        'Unterminierter oder mazerierter Wundrand → Behandlung erforderlich. '
-                        'Wundgröße dokumentieren: Länge × Breite × Tiefe in cm, Fotodokumentation.'
+                        'Bedeutung der Mobilität\n'
+                        'Menschen in ihrer Mobilität zu unterstützen ist wesentliche Aufgabe der Pflege. '
+                        'Immobilität erhöht das Risiko für Dekubitus, Pneumonie, Thrombose und '
+                        'Muskelabbau. Mobilisierung verbessert Lebensqualität und beschleunigt Genesung.\n\n'
+                        'Expertenstandard „Erhaltung und Förderung der Mobilität in der Pflege"\n'
+                        'Herausgegeben vom DNQP (Deutsches Netzwerk für Qualitätsentwicklung in der Pflege). '
+                        'Ziel: Erhaltung und Förderung der Mobilität pflegebedürftiger Menschen. '
+                        'Beinhaltet: Einschätzung, Planung, Durchführung und Evaluation von '
+                        'Mobilitätsmaßnahmen.\n\n'
+                        'Gesetzliche Grundlagen\n'
+                        'Arbeitsschutzgesetz (ArbSchG): Pflicht des Arbeitgebers zur '
+                        'Gefährdungsbeurteilung. '
+                        'Lastenhandhabungsverordnung (LasthandhabV): Schutz bei manuellem Bewegen. '
+                        'SGB XI: Pflegequalität als gesetzliche Anforderung.'
                     ),
                 },
                 {
-                    'title': 'Verbandtechniken und Wundauflagen',
-                    'description': 'Aseptischen Verbandwechsel durchführen und Wundauflagen indikationsgerecht auswählen.',
+                    'title': 'MSE-Prävention: Muskel-Skelett-Erkrankungen',
+                    'description': 'Belastungen der Lendenwirbelsäule beim Mobilisieren und Präventionsmaßnahmen.',
                     'content': (
-                        'Der Verbandwechsel muss aseptisch erfolgen, um Infektionen zu vermeiden.\n\n'
-                        'Vorbereitung\n'
-                        'Händedesinfektion, sterile Materialien bereitlegen, ausreichend Licht, '
-                        'Patientenposition optimieren.\n\n'
-                        'Durchführung\n'
-                        'Alten Verband mit unsterilen Handschuhen entfernen (Wunde nicht berühren). '
-                        'Wundbeurteilung. Handschuhe wechseln, Händedesinfektion. '
-                        'Wundreinigung mit steriler NaCl 0,9 %: von innen nach außen wischen.\n\n'
-                        'Wundauflagen nach Indikation\n'
-                        'Hydrokolloide: leicht bis mittel exsudierend, schützend. '
-                        'Alginate: stark exsudierend, blutstillend. '
-                        'Schaumstoffverbände: mittleres bis starkes Exsudat. '
-                        'Silberverbände: infizierte Wunden. '
-                        'Hydrogele: trockene, nekrotische Wunden.\n\n'
+                        'Bedeutung von MSE in der Pflege\n'
+                        'Tätigkeiten zur Mobilitätsförderung können das Muskel-Skelett-System '
+                        'der Pflegekräfte gefährden. '
+                        'MSE (Muskel-Skelett-Erkrankungen) sind häufigste Berufskrankheit in der Pflege, '
+                        'insbesondere Schäden an der Lendenwirbelsäule (LWS).\n\n'
+                        'Druckbelastungen der LWS\n'
+                        'Manuelle Patienten-Transfers erzeugen hohe Druckkräfte auf die LWS '
+                        '(bis 3.400 N bei ungünstiger Haltung). '
+                        'Besonders risikoreich: Bücken ohne Hilfsmittel, asymmetrische Lasten, '
+                        'verdrehte Körperhaltung.\n\n'
+                        'Prävention\n'
+                        'Rückenschule und ergonomisches Arbeiten. '
+                        'Einsatz von Hilfsmitteln (Rutschbrett, Rollstuhl, Hebebühne, Lifter). '
+                        'Regelmäßige Schulungen für Pflegepersonal. '
+                        'Betriebliches Gesundheitsmanagement (BGM).'
+                    ),
+                },
+                {
+                    'title': 'Gefährdungsbeurteilung',
+                    'description': 'Schritte der Gefährdungsbeurteilung und tätigkeitsbezogene Analyse.',
+                    'content': (
+                        'Was ist eine Gefährdungsbeurteilung?\n'
+                        'Systematische Analyse von Gefährdungen am Arbeitsplatz. '
+                        'Gesetzlich verpflichtend nach ArbSchG §5. '
+                        'Ziel: Gefährdungen erkennen → Maßnahmen ableiten → umsetzen → prüfen.\n\n'
+                        'Schritte der Gefährdungsbeurteilung\n'
+                        '1. Arbeitsbereiche und Tätigkeiten ermitteln.\n'
+                        '2. Gefährdungen erkennen.\n'
+                        '3. Gefährdungen beurteilen.\n'
+                        '4. Schutzmaßnahmen festlegen.\n'
+                        '5. Maßnahmen umsetzen.\n'
+                        '6. Wirksamkeit prüfen.\n'
+                        '7. Dokumentation.\n\n'
+                        'Tätigkeitsbezogene Gefährdungsbeurteilung\n'
+                        'Unterscheidung: allgemeine Beurteilung (Tätigkeitsgruppen) vs. '
+                        'Einzelfallbeurteilung (patientenindividuell). '
+                        'Im Pflegeprozess: Mobilitätsstatus des Patienten → '
+                        'geeignete Transfermethode → Hilfsmittelbedarf bestimmen.'
+                    ),
+                },
+                {
+                    'title': 'Expertenstandard Mobilität: Einschätzungshilfe',
+                    'description': 'Einschätzungshilfe beim Bewegen von Menschen: Formular und Anwendung.',
+                    'content': (
+                        'Einschätzungshilfe beim Bewegen von Menschen\n'
+                        'Standardisiertes Instrument zur Beurteilung des Unterstützungsbedarfs '
+                        'bei der Mobilisation. Verknüpft Expertenstandard mit Arbeitsschutz.\n\n'
+                        'Beurteilungskriterien\n'
+                        'Körpergewicht und -größe des Patienten. '
+                        'Kooperationsfähigkeit (Verständnis, Mitarbeit). '
+                        'Restmobilität (Kraft, Gleichgewicht, Beweglichkeit). '
+                        'Schmerzen oder Kontrakturen. '
+                        'Vorhandene Hilfsmittel.\n\n'
+                        'Integration in den Pflegeprozess\n'
+                        'Einschätzung bei Aufnahme und bei Veränderungen des Zustands. '
+                        'Ergebnis fließt in Pflegeplanung ein: '
+                        'welche Transfermethode, welche Hilfsmittel, wie viele Pflegepersonen?\n\n'
                         'Dokumentation\n'
-                        'Wundzustand, verwendetes Material, Datum des nächsten Verbandwechsels.'
+                        'Formular im Pflegebericht → Transparenz für gesamtes Team → '
+                        'Schutz vor Haftung bei Unfällen.'
                     ),
                 },
                 {
-                    'title': 'Dekubitus: Klassifikation und Prävention',
-                    'description': 'Dekubitus klassifizieren, Risikofaktoren erkennen und Prophylaxe umsetzen.',
+                    'title': 'Praktische Mobilisationstechniken',
+                    'description': 'Ergonomische Transfer- und Mobilisationsmethoden im Pflegealltag.',
                     'content': (
-                        'Dekubitus ist eine lokale Schädigung der Haut durch Druck oder Scherkräfte.\n\n'
-                        'Klassifikation (NPUAP/EPUAP)\n'
-                        'Grad 1: Nicht wegdrückbare Rötung bei intakter Haut.\n'
-                        'Grad 2: Teilverlust der Haut (flaches offenes Ulkus).\n'
-                        'Grad 3: Vollständiger Hautverlust, subkutanes Fettgewebe sichtbar.\n'
-                        'Grad 4: Vollständiger Hautverlust mit Exposition von Knochen, Sehnen oder Muskeln.\n\n'
-                        'Risikofaktoren\n'
-                        'Immobilität, Mangelernährung, Inkontinenz, Sensibilitätsstörungen, '
-                        'Durchblutungsstörungen. Risikoerfassung mit Braden-Skala (≤ 18 Punkte = Risiko).\n\n'
-                        'Prophylaxe\n'
-                        'Regelmäßige Umlagerung im 2-Stunden-Rhythmus (30°-Schieflagerung). '
-                        'Druckentlastende Matratzen (Wechseldruck, Schaumstoff). '
-                        'Hautpflege: kein Reiben, feuchtigkeitserhaltend. '
-                        'Ernährungsoptimierung, Inkontinenzversorgung. '
-                        'Mikrolagerungen alle 15–30 min zwischen größeren Umlagerungen.'
+                        'Grundprinzipien ergonomischen Arbeitens\n'
+                        'Aufrechte Körperhaltung, Rücken nicht bücken. '
+                        'Kniend oder hockend arbeiten statt gebückt. '
+                        'Patient so nah wie möglich heranziehen (kurze Hebelarme). '
+                        'Hilfsmittel bevorzugen vor manuellem Heben.\n\n'
+                        'Häufige Transfersituationen\n'
+                        'Bett → Rollstuhl: Rutschbrett, Dreh-/Transferhilfen nutzen. '
+                        'Aufsetzen im Bett: Patient an Bettkante begleiten, Rollbewegung nutzen. '
+                        'Aufstehtraining: Stand am Bett, Gleichgewicht üben, Gehstützen. '
+                        'Positionswechsel: 30°-Schieflagerung, Mikrolagerung.\n\n'
+                        'Hilfsmittel\n'
+                        'Rutschbrett/-folie: erleichtert sitzende Transfers. '
+                        'Patientenlifter (aktiv/passiv): bei schwerer Pflegebedürftigkeit. '
+                        'Stehlifter: für Patienten mit Reststandfähigkeit. '
+                        'Rollstühle, Rollatoren: Förderung der Eigenständigkeit.\n\n'
+                        'Zielkonflikte\n'
+                        'Patientenautonomie vs. Arbeitsschutz: '
+                        'Abwägung zwischen Patientenwunsch (ohne Lifter) und Personalgesundheit. '
+                        'Lösung: Kommunikation, gemeinsame Entscheidung, Dokumentation.'
                     ),
                 },
             ],
@@ -906,24 +1094,34 @@ def init_db(app):
             db.session.add(teacher)
             db.session.commit()
 
-        # Seed demo courses if the canonical first course doesn't exist yet
-        DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
+        # Add current_module_id column if missing (SQLite doesn't support ALTER TABLE ADD COLUMN idempotently)
+        try:
+            db.session.execute(db.text('ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)'))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()  # Column already exists
+
+        # All known demo title sets (old and new) for cleanup
+        OLD_DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
+        NEW_DEMO_TITLES = {'Blutdruckmessung', 'Anatomie des Herzens', 'Patientenmobilisation'}
+        ALL_DEMO_TITLES = OLD_DEMO_TITLES | NEW_DEMO_TITLES
+
         existing_titles = {c.title for c in Course.query.filter_by(owner_id=teacher.id).all()}
 
         # Remove duplicates (can happen when debug reloader fires init_db twice)
         seen = set()
-        for c in Course.query.filter_by(owner_id=teacher.id).all():
+        for c in Course.query.filter_by(owner_id=teacher.id).order_by(Course.id).all():
             if c.title in seen:
                 db.session.delete(c)
             else:
                 seen.add(c.title)
         db.session.commit()
 
-        # Add any missing demo courses
-        if not DEMO_TITLES.issubset(existing_titles):
-            # Remove only demo stubs, keep teacher-created courses
+        # Remove old-style demo courses; seed new PDF-based ones if not present
+        has_new = NEW_DEMO_TITLES.issubset(existing_titles)
+        if not has_new:
             for c in Course.query.filter_by(owner_id=teacher.id).all():
-                if c.title in DEMO_TITLES:
+                if c.title in ALL_DEMO_TITLES:
                     db.session.delete(c)
             db.session.commit()
             _seed_demo_courses(teacher.id)

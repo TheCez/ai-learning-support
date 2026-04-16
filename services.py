@@ -1,5 +1,6 @@
 import os
-from models import db, User, Course, Module, QuizQuestion
+import json as _json
+from models import db, User, Course, Module
 
 genai = None
 genai_types = None
@@ -335,13 +336,563 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
         )
 
 
+_MODELS = ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash')
+_RETRY_CODES = ('429', '503', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE')
+
+
+def call_gemini_chat(system_instruction: str, contents_list: list) -> str:
+    """Multi-Turn-Gemini-Aufruf für den interaktiven KI-Lehrer."""
+    if not _load_gemini():
+        return "google-genai ist nicht installiert. Bitte führe pip install google-genai aus."
+
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return "Kein GOOGLE_API_KEY konfiguriert. Bitte .env-Datei prüfen."
+
+    try:
+        sdk_contents = [
+            genai_types.Content(
+                role=turn['role'],
+                parts=[genai_types.Part(text=turn['text'])]
+            )
+            for turn in contents_list
+        ]
+
+        client = genai.Client(api_key=api_key)
+        config = genai_types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            max_output_tokens=300,
+            temperature=0.8,
+        )
+
+        for model in _MODELS:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=sdk_contents,
+                    config=config,
+                )
+                return response.text
+            except Exception as e:
+                if any(c in str(e) for c in _RETRY_CODES):
+                    continue
+                raise
+
+        return "Alle KI-Modelle sind gerade überlastet. Bitte in einer Minute erneut versuchen."
+    except Exception as e:
+        return f"Fehler beim KI-Aufruf: {type(e).__name__}: {e}"
+
+
+def build_ki_lehrer_system_prompt(first_name: str, language_level: str,
+                                   module_title: str, course_title: str,
+                                   module_content: str) -> str:
+    level_desc = {
+        'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, nur Grundvokabular – jeden Fachbegriff sofort erklären',
+        'A2': 'einfaches Deutsch mit Alltagsausdrücken, kurze klare Sätze',
+        'B1': 'klares Standarddeutsch, Pflegefachbegriffe mit kurzer Erklärung',
+        'B2': 'normales Pflegedeutsch, Fachterminologie frei verwendbar',
+        'C1': 'gehobenes Pflegefachdeutsch mit vollständiger medizinischer Terminologie',
+    }.get(language_level, 'verständliches Deutsch')
+
+    module_section = ''
+    if module_content:
+        module_section = f"""
+
+## Modulinhalt (Pflichtbasis deiner Erklärungen)
+Deine Erklärungen MÜSSEN sich auf diesen offiziellen Inhalt beziehen:
+
+---
+{module_content[:2000]}
+---
+"""
+
+    return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
+Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title}).
+
+## Persönlichkeit
+- Freundlich, geduldig, ermutigend – du kennst die Herausforderungen der Pflegeausbildung
+- Du nennst dich niemals „KI" – du bist immer Professor Wagner
+- Du sprichst {first_name} mit Vornamen an
+- Sanfte Korrekturen: „Fast! Lass uns das gemeinsam anschauen…" – niemals harsche Kritik
+
+## Sprachniveau: {language_level}
+{level_desc}. Passe JEDE Antwort strikt an dieses Niveau an.
+
+## Unterrichtsmethode (strikte Reihenfolge)
+1. BEGRÜSSUNG (nur bei __GREETING__): Herzliche Begrüßung + Thema vorstellen + ersten Kernpunkt erklären
+2. ERKLÄREN: Einen Teilaspekt in 2–3 Sätzen erklären
+3. FRAGEN: Immer mit einer offenen Verständnisfrage enden (keine Ja/Nein-Fragen)
+4. REAGIEREN: Antwort bestätigen/korrigieren, dann nächsten Punkt einführen
+
+## Regeln
+- Max. 4–5 Sätze pro Antwort (bei Begrüßung max. 6)
+- Jede Antwort endet mit einer Frage (außer bei direkten Faktenfragen)
+- Off-topic-Fragen sanft zurück zum Thema lenken
+- Immer auf Deutsch antworten{module_section}"""
+
+
+def _strip_md_code(text: str) -> str:
+    """Strip markdown code fences from AI response."""
+    text = text.strip()
+    if text.startswith('```'):
+        lines = text.split('\n')
+        text = '\n'.join(lines[1:])
+        if text.rstrip().endswith('```'):
+            text = text.rstrip()[:-3]
+    return text.strip()
+
+
+def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
+    """Generate AI quiz questions for a module, adapted to student level."""
+    if not _load_gemini():
+        return []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return []
+
+    content = (module.content or module.description or '')[:2500]
+    level_hint = {
+        'A1': 'sehr einfaches Deutsch, kurze Sätze',
+        'A2': 'einfaches Deutsch, Alltagsvokabular',
+        'B1': 'klares Standarddeutsch',
+        'B2': 'normales Pflegedeutsch',
+        'C1': 'gehobenes Pflegefachdeutsch',
+    }.get(language_level, 'klares Deutsch')
+
+    num_ft = max(1, num_questions - 2)
+    num_mc = num_questions - num_ft
+
+    prompt = (
+        f'Erstelle genau {num_questions} Quizfragen auf Deutsch über "{module.title}".\n'
+        f'Grundlage:\n{content}\n\n'
+        f'Sprachniveau: {language_level} ({level_hint})\n'
+        f'Genau {num_ft} Freitext-Fragen und {num_mc} Multiple-Choice-Fragen.\n\n'
+        f'Antworte NUR mit validem JSON (kein Markdown, keine Erklärung):\n'
+        f'{{"questions":['
+        f'{{"type":"free_text","question":"...","model_answer":"..."}},'
+        f'{{"type":"multiple_choice","question":"...","options":["A","B","C","D"],"answer":"A"}}'
+        f']}}'
+    )
+
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=900, temperature=0.4)
+
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            data = _json.loads(_strip_md_code(resp.text))
+            questions = data.get('questions', [])
+            valid = [q for q in questions if 'question' in q and 'type' in q]
+            if valid:
+                for i, q in enumerate(valid):
+                    q['id'] = i
+                return valid[:num_questions]
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return []
+
+
+def evaluate_ai_answers(questions: list, student_answers: dict, language_level: str) -> list:
+    """Evaluate student answers. MC: exact match. Free text: AI batch evaluation."""
+    results = [None] * len(questions)
+    free_pairs = []  # (original_idx, q_text, model_answer, student_answer)
+
+    for i, q in enumerate(questions):
+        sa = student_answers.get(str(i), '').strip()
+        if q.get('type') == 'multiple_choice':
+            correct = q.get('answer', '')
+            ok = sa.strip() == correct.strip()
+            results[i] = {
+                'question': q['question'],
+                'student_answer': sa,
+                'correct_answer': correct,
+                'is_correct': ok,
+                'feedback': 'Richtig!' if ok else f'Richtige Antwort: {correct}',
+                'score': 1 if ok else 0,
+            }
+        else:
+            model_ans = q.get('model_answer', q.get('answer', ''))
+            free_pairs.append((i, q['question'], model_ans, sa))
+
+    # AI batch evaluation for all free-text questions in one call
+    if free_pairs and _load_gemini():
+        api_key = os.environ.get('GOOGLE_API_KEY', '')
+        if api_key:
+            pairs_text = '\n'.join(
+                f'{j+1}. Frage: {qt}\n   Musterantwort: {ma}\n   Schülerantwort: "{sa}"'
+                for j, (_, qt, ma, sa) in enumerate(free_pairs)
+            )
+            prompt = (
+                f'Bewerte {len(free_pairs)} Pflegeschüler-Antworten (Sprachniveau {language_level}).\n'
+                f'Sei großzügig: Inhaltlich korrekte Antworten → score 1, auch bei Rechtschreibfehlern.\n\n'
+                f'{pairs_text}\n\n'
+                f'Antworte NUR mit validem JSON:\n'
+                f'{{"results":[{{"score":1,"feedback":"Sehr gut! ..."}}]}}\n'
+                f'Genau {len(free_pairs)} Einträge im Array.'
+            )
+            client = genai.Client(api_key=api_key)
+            cfg = genai_types.GenerateContentConfig(max_output_tokens=600, temperature=0.2)
+            for model in _MODELS:
+                try:
+                    resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+                    er_list = _json.loads(_strip_md_code(resp.text)).get('results', [])
+                    for k, (orig_i, qt, ma, sa) in enumerate(free_pairs):
+                        er = er_list[k] if k < len(er_list) else {}
+                        results[orig_i] = {
+                            'question': qt,
+                            'student_answer': sa,
+                            'correct_answer': ma,
+                            'is_correct': er.get('score', 0) == 1,
+                            'feedback': er.get('feedback', ''),
+                            'score': er.get('score', 0),
+                        }
+                    break
+                except Exception as e:
+                    if any(c in str(e) for c in _RETRY_CODES):
+                        continue
+                    break
+
+    # Fallback for any results that are still None (AI failed)
+    for i, r in enumerate(results):
+        if r is None:
+            q = questions[i]
+            ma = q.get('model_answer', q.get('answer', ''))
+            sa = student_answers.get(str(i), '')
+            results[i] = {
+                'question': q['question'],
+                'student_answer': sa,
+                'correct_answer': ma,
+                'is_correct': False,
+                'feedback': f'Musterantwort: {ma}',
+                'score': 0,
+            }
+    return results
+
+
+def generate_language_test_questions() -> list:
+    """AI-generated German language test for nursing context. Falls back to static on error."""
+    if not _load_gemini():
+        return []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return []
+
+    prompt = (
+        'Erstelle 10 Deutsch-Testfragen für Pflegepersonal (GER A1–C1, je 2 Fragen pro Niveau).\n'
+        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice. Pflegerischer Kontext.\n'
+        'Antworte NUR mit validem JSON:\n'
+        '{"questions":['
+        '{"type":"free_text","level":"A1","question":"...","model_answer":"..."},'
+        '{"type":"multiple_choice","level":"B1","question":"...","options":["A","B","C","D"],"answer":"A"}'
+        ']}'
+    )
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            questions = _json.loads(_strip_md_code(resp.text)).get('questions', [])
+            if len(questions) >= 8:
+                return questions[:10]
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return []
+
+
+def generate_nursing_test_questions() -> list:
+    """AI-generated nursing knowledge test. Falls back to static on error."""
+    if not _load_gemini():
+        return []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return []
+
+    prompt = (
+        'Erstelle 10 Pflegewissen-Testfragen für Pflegeschüler (Grundausbildung).\n'
+        'Themen: Vitalzeichen, Hygiene, Lagerung, Dekubitus, Medikamente, Dokumentation, Notfall.\n'
+        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice.\n'
+        'Antworte NUR mit validem JSON:\n'
+        '{"questions":['
+        '{"type":"free_text","question":"...","model_answer":"..."},'
+        '{"type":"multiple_choice","question":"...","options":["A","B","C","D"],"answer":"A"}'
+        ']}'
+    )
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            questions = _json.loads(_strip_md_code(resp.text)).get('questions', [])
+            if len(questions) >= 8:
+                return questions[:10]
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return []
+
+
+def _seed_demo_courses(teacher_id: int):
+    """Seed 3 demo nursing courses with rich module content."""
+    courses_data = [
+        {
+            'title': 'Vitalzeichen und Monitoring',
+            'summary': 'Grundlagen der Vitalzeichenmessung: Puls, Blutdruck, Atmung, Temperatur und Sauerstoffsättigung sicher erfassen und dokumentieren.',
+            'level': 'A2',
+            'modules': [
+                {
+                    'title': 'Puls und Herzfrequenz messen',
+                    'description': 'Pulsfrequenz, -rhythmus und -qualität korrekt erfassen.',
+                    'content': (
+                        'Der Puls ist die fühlbare Druckwelle des Herzschlags in den Arterien. '
+                        'Beim Erwachsenen liegt der normale Ruhepuls zwischen 60 und 100 Schlägen pro Minute. '
+                        'Ein Puls unter 60/min heißt Bradykardie, über 100/min Tachykardie.\n\n'
+                        'Messstellen\n'
+                        'Gemessen wird der Puls meist an der A. radialis (Handgelenk), A. carotis (Hals) '
+                        'oder A. femoralis. Bei der Pulsmessung werden Frequenz, Rhythmus, Qualität '
+                        '(kräftig/schwach) und Gleichmäßigkeit beurteilt.\n\n'
+                        'Durchführung\n'
+                        'Die Messdauer beträgt mindestens 30 Sekunden (×2) oder bei Unregelmäßigkeiten '
+                        'eine volle Minute. Einflussfaktoren: körperliche Aktivität, Fieber, Schmerzen, '
+                        'Medikamente, emotionaler Stress.\n\n'
+                        'Dokumentation\n'
+                        'Uhrzeit, Messwert, Messpunkt und Besonderheiten (z.B. Unregelmäßigkeiten) '
+                        'werden im Pflegebericht festgehalten.'
+                    ),
+                },
+                {
+                    'title': 'Blutdruckmessung nach Riva-Rocci',
+                    'description': 'Blutdruck korrekt messen, interpretieren und dokumentieren.',
+                    'content': (
+                        'Der Blutdruck beschreibt den Druck des Blutes in den Arterien (Angabe in mmHg). '
+                        'Der systolische Wert (oben) entsteht bei Herzkontraktion, '
+                        'der diastolische (unten) bei Herzerschlaffung. '
+                        'Normwert: 120/80 mmHg. Hypertonie: ≥ 140/90 mmHg. Hypotonie: < 90/60 mmHg.\n\n'
+                        'Messtechnik\n'
+                        'Patient sitzt entspannt, Manschette am Oberarm auf Herzhöhe. '
+                        'Manschette ca. 30 mmHg über dem erwarteten Wert aufpumpen, dann langsam ablassen. '
+                        'Korotkoff-Geräusche: Beginn = systolisch, Verschwinden = diastolisch.\n\n'
+                        'Häufige Fehler\n'
+                        'Falsche Manschettengröße, falsche Armposition, Weißkittel-Effekt, volle Blase. '
+                        'Manschette darf nicht zu locker sitzen (falscher Wert).\n\n'
+                        'Dokumentation\n'
+                        'Messwert, Arm (links/rechts), Körperposition, Uhrzeit und Besonderheiten.'
+                    ),
+                },
+                {
+                    'title': 'Atemfrequenz und Sauerstoffsättigung',
+                    'description': 'Atmung beurteilen und SpO₂ korrekt messen.',
+                    'content': (
+                        'Die Atemfrequenz (AF) ist die Anzahl der Atemzüge pro Minute. '
+                        'Normwert Erwachsene: 12–20/min. Tachypnoe: > 20/min. Bradypnoe: < 12/min.\n\n'
+                        'Messung\n'
+                        'Die AF sollte möglichst unbemerkt gemessen werden (z.B. nach Pulsmessung, '
+                        'Finger noch am Handgelenk). Beurteilung: Frequenz, Tiefe, Rhythmus, Geräusche.\n\n'
+                        'Sauerstoffsättigung (SpO₂)\n'
+                        'Normwert: 95–100 %. Unter 90 % → kritische Hypoxie, sofort handeln! '
+                        'Messung mit Pulsoximeter an Finger oder Ohrläppchen. '
+                        'Störfaktoren: Nagellack, Kälte, Bewegung, periphere Durchblutungsstörungen.\n\n'
+                        'Wichtig\n'
+                        'SpO₂ immer zusammen mit dem klinischen Gesamtbild bewerten.'
+                    ),
+                },
+                {
+                    'title': 'Körpertemperatur messen',
+                    'description': 'Temperaturmessung, Normalwerte und Fieberphasen kennen.',
+                    'content': (
+                        'Die Körpertemperatur zeigt Entzündungsprozesse und Stoffwechselzustand an.\n\n'
+                        'Normwerte je nach Messstelle\n'
+                        'Rektal (goldener Standard): 36,8–37,8 °C. Oral: 0,3–0,5 °C niedriger. '
+                        'Axillär (Achsel): 0,5–1,0 °C niedriger. Tympanal (Ohr): entspricht rektal.\n\n'
+                        'Bewertung\n'
+                        'Fieber: ≥ 38,0 °C. Subfebrile Temperatur: 37,5–37,9 °C. '
+                        'Hypothermie: < 36,0 °C.\n\n'
+                        'Fieberphasen\n'
+                        '1. Anstieg: Kältegefühl, Schüttelfrost. '
+                        '2. Höhepunkt: Hitze, Hautrötung. '
+                        '3. Abfall: Schwitzen.\n\n'
+                        'Pflegemaßnahmen bei Fieber\n'
+                        'Fieberkurve führen, ausreichend Flüssigkeit anbieten, kühle Umgebung, '
+                        'Wadenwickel auf Wunsch, ärztlich verordnete Antipyretika verabreichen.'
+                    ),
+                },
+            ],
+        },
+        {
+            'title': 'Hygiene und Infektionsschutz',
+            'summary': 'Grundlagen der Krankenhaushygiene: Händedesinfektion, Schutzausrüstung und Isolationsmaßnahmen zur Prävention nosokomialer Infektionen.',
+            'level': 'B1',
+            'modules': [
+                {
+                    'title': 'Hygienische Händedesinfektion – 5 Momente',
+                    'description': 'Die 5 WHO-Momente der Händehygiene sicher anwenden.',
+                    'content': (
+                        'Die Händedesinfektion ist die wirksamste Einzelmaßnahme zur Prävention '
+                        'nosokomialer Infektionen.\n\n'
+                        'Die 5 WHO-Momente der Händehygiene\n'
+                        '1. VOR Patientenkontakt\n'
+                        '2. VOR aseptischer Tätigkeit (z.B. Verbandwechsel, Injektion)\n'
+                        '3. NACH Kontakt mit potenziell infektiösem Material\n'
+                        '4. NACH Patientenkontakt\n'
+                        '5. NACH Kontakt mit der Patientenumgebung\n\n'
+                        'Durchführung\n'
+                        '3–5 ml alkoholisches Händedesinfektionsmittel in TROCKENE Hände geben, '
+                        'mindestens 30 Sekunden einreiben. Alle Flächen bearbeiten: '
+                        'Handflächen, Handrücken, Fingerzwischenräume, Fingerkuppen, Daumen.\n\n'
+                        'Wichtig\n'
+                        'Feuchte Hände reduzieren die Wirksamkeit! Handschuhe ersetzen NICHT die '
+                        'Händedesinfektion – auch vor und nach dem Tragen desinfizieren.'
+                    ),
+                },
+                {
+                    'title': 'Persönliche Schutzausrüstung (PSA)',
+                    'description': 'PSA korrekt anlegen, tragen und ausziehen.',
+                    'content': (
+                        'PSA schützt Pflegepersonal und Patienten vor Infektionsübertragung.\n\n'
+                        'Einmalhandschuhe\n'
+                        'Bei Kontakt mit Körperflüssigkeiten, Schleimhäuten oder nicht-intakter Haut. '
+                        'Anlegen nach Händedesinfektion. Ausziehen: Außenseite nicht berühren, sofort entsorgen.\n\n'
+                        'Masken\n'
+                        'Mund-Nasen-Schutz (MNS): Schutz vor Tröpfchenübertragung, bedeckt Mund und Nase eng. '
+                        'FFP2/FFP3: bei aerogener Übertragung (z.B. Tuberkulose, COVID-19).\n\n'
+                        'Schutzkittel und Schutzbrille\n'
+                        'Kittel bei Kontaktprecautions und Spritzgefahr. '
+                        'Brille als Spritzschutz für Augen.\n\n'
+                        'Reihenfolge Anlegen (GOWN)\n'
+                        '1. Kittel → 2. Maske → 3. Brille → 4. Handschuhe\n\n'
+                        'Reihenfolge Ausziehen\n'
+                        '1. Handschuhe (kontaminierteste Fläche) → 2. Brille → 3. Kittel → 4. Maske. '
+                        'Nach jedem Schritt Händedesinfektion!'
+                    ),
+                },
+                {
+                    'title': 'Isolationsmaßnahmen',
+                    'description': 'Kontakt-, Tröpfchen- und Aerogenisolation korrekt anwenden.',
+                    'content': (
+                        'Isolationsmaßnahmen verhindern die Ausbreitung von Infektionserregern.\n\n'
+                        'Kontaktisolation (z.B. MRSA, VRE, Durchfall)\n'
+                        'Einzel- oder Kohortenzimmer. PSA (Handschuhe + Kittel) vor Betreten anlegen. '
+                        'Patientenbezogenes Material verwenden. Desinfektion vor dem Verlassen.\n\n'
+                        'Tröpfchenisolation (z.B. Influenza, Meningitis, Keuchhusten)\n'
+                        'MNS für Personal im Abstand < 1 m. Patient trägt MNS beim Transport.\n\n'
+                        'Aerogenisolation (z.B. Tuberkulose, Masern, Windpocken)\n'
+                        'Unterdruckzimmer erforderlich. FFP2/3 für Personal. '
+                        'Patient verlässt Zimmer nur mit MNS.\n\n'
+                        'Standard-Precautions (gelten für ALLE Patienten)\n'
+                        'Händehygiene, PSA bei Kontaminationsrisiko, sichere Entsorgung von Sharps '
+                        '(Spritzen NIEMALS recappen!). Isolationsmaßnahmen im Pflegebericht dokumentieren.'
+                    ),
+                },
+            ],
+        },
+        {
+            'title': 'Wundversorgung und Dekubitus',
+            'summary': 'Wunden fachgerecht beurteilen, versorgen und Dekubitus systematisch verhüten. Grundlagen des TIME-Konzepts und der Druckgeschwürprävention.',
+            'level': 'B2',
+            'modules': [
+                {
+                    'title': 'Wundbeurteilung nach TIME',
+                    'description': 'Das TIME-Konzept zur systematischen Wundbeurteilung anwenden.',
+                    'content': (
+                        'Das TIME-Konzept ist ein standardisiertes Framework zur Wundbeurteilung.\n\n'
+                        'T – Tissue (Wundgrund)\n'
+                        'Beurteilung des Gewebezustands: nekrotisch (schwarz), belegt (gelb), '
+                        'granulierend (rot) oder epithelisierend (rosa). '
+                        'Débridement bei Nekrose und Belag notwendig.\n\n'
+                        'I – Infection/Inflammation (Infektion/Entzündung)\n'
+                        'Lokalzeichen: Rötung, Überwärmung, Schwellung, Schmerz, purulentes Exsudat, Geruch. '
+                        'Systemzeichen: Fieber, erhöhte Entzündungswerte. '
+                        'Wundabstrich bei Infektionsverdacht.\n\n'
+                        'M – Moisture (Feuchtigkeit)\n'
+                        'Optimales Wundmilieu = feucht, nicht nass. '
+                        'Übermäßiges Exsudat → Mazeration des Wundrandes. '
+                        'Zu trockene Wunde → Heilungsverzögerung.\n\n'
+                        'E – Edge (Wundrand)\n'
+                        'Intakte, fortschreitende Epithelisierung = Heilungszeichen. '
+                        'Unterminierter oder mazerierter Wundrand → Behandlung erforderlich. '
+                        'Wundgröße dokumentieren: Länge × Breite × Tiefe in cm, Fotodokumentation.'
+                    ),
+                },
+                {
+                    'title': 'Verbandtechniken und Wundauflagen',
+                    'description': 'Aseptischen Verbandwechsel durchführen und Wundauflagen indikationsgerecht auswählen.',
+                    'content': (
+                        'Der Verbandwechsel muss aseptisch erfolgen, um Infektionen zu vermeiden.\n\n'
+                        'Vorbereitung\n'
+                        'Händedesinfektion, sterile Materialien bereitlegen, ausreichend Licht, '
+                        'Patientenposition optimieren.\n\n'
+                        'Durchführung\n'
+                        'Alten Verband mit unsterilen Handschuhen entfernen (Wunde nicht berühren). '
+                        'Wundbeurteilung. Handschuhe wechseln, Händedesinfektion. '
+                        'Wundreinigung mit steriler NaCl 0,9 %: von innen nach außen wischen.\n\n'
+                        'Wundauflagen nach Indikation\n'
+                        'Hydrokolloide: leicht bis mittel exsudierend, schützend. '
+                        'Alginate: stark exsudierend, blutstillend. '
+                        'Schaumstoffverbände: mittleres bis starkes Exsudat. '
+                        'Silberverbände: infizierte Wunden. '
+                        'Hydrogele: trockene, nekrotische Wunden.\n\n'
+                        'Dokumentation\n'
+                        'Wundzustand, verwendetes Material, Datum des nächsten Verbandwechsels.'
+                    ),
+                },
+                {
+                    'title': 'Dekubitus: Klassifikation und Prävention',
+                    'description': 'Dekubitus klassifizieren, Risikofaktoren erkennen und Prophylaxe umsetzen.',
+                    'content': (
+                        'Dekubitus ist eine lokale Schädigung der Haut durch Druck oder Scherkräfte.\n\n'
+                        'Klassifikation (NPUAP/EPUAP)\n'
+                        'Grad 1: Nicht wegdrückbare Rötung bei intakter Haut.\n'
+                        'Grad 2: Teilverlust der Haut (flaches offenes Ulkus).\n'
+                        'Grad 3: Vollständiger Hautverlust, subkutanes Fettgewebe sichtbar.\n'
+                        'Grad 4: Vollständiger Hautverlust mit Exposition von Knochen, Sehnen oder Muskeln.\n\n'
+                        'Risikofaktoren\n'
+                        'Immobilität, Mangelernährung, Inkontinenz, Sensibilitätsstörungen, '
+                        'Durchblutungsstörungen. Risikoerfassung mit Braden-Skala (≤ 18 Punkte = Risiko).\n\n'
+                        'Prophylaxe\n'
+                        'Regelmäßige Umlagerung im 2-Stunden-Rhythmus (30°-Schieflagerung). '
+                        'Druckentlastende Matratzen (Wechseldruck, Schaumstoff). '
+                        'Hautpflege: kein Reiben, feuchtigkeitserhaltend. '
+                        'Ernährungsoptimierung, Inkontinenzversorgung. '
+                        'Mikrolagerungen alle 15–30 min zwischen größeren Umlagerungen.'
+                    ),
+                },
+            ],
+        },
+    ]
+
+    for cd in courses_data:
+        course = Course(
+            title=cd['title'],
+            summary=cd['summary'],
+            recommended_level=cd['level'],
+            owner_id=teacher_id
+        )
+        db.session.add(course)
+        db.session.flush()
+        for pos, md in enumerate(cd['modules'], start=1):
+            module = Module(
+                course_id=course.id,
+                title=md['title'],
+                description=md['description'],
+                module_type='quiz',
+                content=md['content'],
+                position=pos
+            )
+            db.session.add(module)
+    db.session.commit()
+
+
 def init_db(app):
     with app.app_context():
         db.create_all()
 
+        from werkzeug.security import generate_password_hash
         teacher = User.query.filter_by(email='lehrer@carelearn.de').first()
         if not teacher:
-            from werkzeug.security import generate_password_hash
             teacher = User(
                 role='teacher',
                 email='lehrer@carelearn.de',
@@ -355,102 +906,24 @@ def init_db(app):
             db.session.add(teacher)
             db.session.commit()
 
-            course = Course(
-                title='Vitalzeichen sicher messen',
-                summary='Ein Einsteigerkurs zu Puls, Blutdruck und Atmung für Pflegefachkräfte im ersten Ausbildungsjahr.',
-                recommended_level='A2',
-                owner_id=teacher.id
-            )
-            db.session.add(course)
-            db.session.commit()
+        # Seed demo courses if the canonical first course doesn't exist yet
+        DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
+        existing_titles = {c.title for c in Course.query.filter_by(owner_id=teacher.id).all()}
 
-            module = Module(
-                course_id=course.id,
-                title='Puls und Blutdruck – Grundlagen',
-                description='Lerne die wichtigsten Vitalwerte kennen und wie du sie korrekt misst.',
-                module_type='quiz',
-                content=(
-                    'Vitalzeichen sind grundlegende Körperfunktionen, die Auskunft über den '
-                    'Gesundheitszustand eines Patienten geben. Dazu gehören Puls, Blutdruck, '
-                    'Atemfrequenz und Körpertemperatur. Ein normaler Puls liegt zwischen '
-                    '60–100 Schlägen pro Minute. Der Normblutdruck liegt bei ca. 120/80 mmHg.'
-                ),
-                position=1
-            )
-            db.session.add(module)
-            db.session.commit()
+        # Remove duplicates (can happen when debug reloader fires init_db twice)
+        seen = set()
+        for c in Course.query.filter_by(owner_id=teacher.id).all():
+            if c.title in seen:
+                db.session.delete(c)
+            else:
+                seen.add(c.title)
+        db.session.commit()
 
-            # Quiz-Fragen für das Demo-Modul anlegen
-            quiz_questions = [
-                QuizQuestion(
-                    module_id=module.id,
-                    question='Welcher Pulswert gilt beim Erwachsenen als Bradykardie (zu langsam)?',
-                    options='Über 100 / min;Unter 60 / min;60–80 / min;80–100 / min',
-                    answer='Unter 60 / min',
-                    multi_choice=False
-                ),
-                QuizQuestion(
-                    module_id=module.id,
-                    question='Welcher Blutdruckwert wird als hypertensiv (zu hoch) eingestuft?',
-                    options='Unter 90/60 mmHg;90–119/60–79 mmHg;120–129/< 80 mmHg;≥ 140/90 mmHg',
-                    answer='≥ 140/90 mmHg',
-                    multi_choice=False
-                ),
-                QuizQuestion(
-                    module_id=module.id,
-                    question='Welche der folgenden gehören zu den klassischen Vitalzeichen? (Mehrfachauswahl)',
-                    options='Puls;Blutdruck;Körpertemperatur;Körpergröße',
-                    answer='Puls;Blutdruck;Körpertemperatur',
-                    multi_choice=True
-                ),
-                QuizQuestion(
-                    module_id=module.id,
-                    question='Was bedeutet eine Sauerstoffsättigung (SpO₂) von unter 90 %?',
-                    options='Normalwert;Leichte Abweichung;Kritische Hypoxie – sofort handeln;Zu hoch – gefährlich',
-                    answer='Kritische Hypoxie – sofort handeln',
-                    multi_choice=False
-                ),
-            ]
-            for q in quiz_questions:
-                db.session.add(q)
+        # Add any missing demo courses
+        if not DEMO_TITLES.issubset(existing_titles):
+            # Remove only demo stubs, keep teacher-created courses
+            for c in Course.query.filter_by(owner_id=teacher.id).all():
+                if c.title in DEMO_TITLES:
+                    db.session.delete(c)
             db.session.commit()
-
-        # Falls der Demokurs vorhanden, aber noch keine Quiz-Fragen → nachrüsten
-        else:
-            course = Course.query.filter_by(owner_id=teacher.id).first()
-            if course:
-                module = Module.query.filter_by(course_id=course.id).first()
-                if module and not module.quiz_questions:
-                    quiz_questions = [
-                        QuizQuestion(
-                            module_id=module.id,
-                            question='Welcher Pulswert gilt beim Erwachsenen als Bradykardie (zu langsam)?',
-                            options='Über 100 / min;Unter 60 / min;60–80 / min;80–100 / min',
-                            answer='Unter 60 / min',
-                            multi_choice=False
-                        ),
-                        QuizQuestion(
-                            module_id=module.id,
-                            question='Welcher Blutdruckwert wird als hypertensiv (zu hoch) eingestuft?',
-                            options='Unter 90/60 mmHg;90–119/60–79 mmHg;120–129/< 80 mmHg;≥ 140/90 mmHg',
-                            answer='≥ 140/90 mmHg',
-                            multi_choice=False
-                        ),
-                        QuizQuestion(
-                            module_id=module.id,
-                            question='Welche der folgenden gehören zu den klassischen Vitalzeichen? (Mehrfachauswahl)',
-                            options='Puls;Blutdruck;Körpertemperatur;Körpergröße',
-                            answer='Puls;Blutdruck;Körpertemperatur',
-                            multi_choice=True
-                        ),
-                        QuizQuestion(
-                            module_id=module.id,
-                            question='Was bedeutet eine Sauerstoffsättigung (SpO₂) von unter 90 %?',
-                            options='Normalwert;Leichte Abweichung;Kritische Hypoxie – sofort handeln;Zu hoch – gefährlich',
-                            answer='Kritische Hypoxie – sofort handeln',
-                            multi_choice=False
-                        ),
-                    ]
-                    for q in quiz_questions:
-                        db.session.add(q)
-                    db.session.commit()
+            _seed_demo_courses(teacher.id)

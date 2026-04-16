@@ -1,40 +1,165 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
+
   <div class="test-header">
     <h1>Pflegewissen-Test</h1>
-    <p class="test-intro">Dieser Test erfasst dein pflegerisches Vorwissen. Bei Fragen mit mehreren richtigen Antworten sind alle richtigen Antworten anzukreuzen.</p>
-    <div class="test-meta">
-      <span class="badge">{{ questions|length }} Fragen</span>
-      <span class="badge badge-warning">Manche Fragen haben mehrere richtige Antworten</span>
+    <p class="test-intro">Dieser Test erfasst dein pflegerisches Vorwissen. Beantworte alle Fragen so gut du kannst.</p>
+    <div class="test-meta" id="test-meta">
+      <span class="badge badge-info">KI-generierte Fragen</span>
+      <span class="badge badge-warning">Pflegerischer Kontext</span>
     </div>
   </div>
-  <form method="post">
-    {% for question in questions %}
-      {% set q_idx = loop.index0 %}
-      <div class="question-block">
-        <div class="question-counter">Frage {{ loop.index }} / {{ questions|length }}{% if question.multi %} <span class="multi-hint">(Mehrfachauswahl möglich)</span>{% endif %}</div>
-        <p class="question-text"><strong>{{ question.question }}</strong></p>
-        {% if question.multi %}
-          {% for option in question.choices %}
-            <label class="option-label">
-              <input type="checkbox" name="question_{{ q_idx }}" value="{{ option }}">
-              <span>{{ option }}</span>
-            </label>
-          {% endfor %}
-        {% else %}
-          {% for option in question.choices %}
-            <label class="option-label">
-              <input type="radio" name="question_{{ q_idx }}" value="{{ option }}" required>
-              <span>{{ option }}</span>
-            </label>
-          {% endfor %}
-        {% endif %}
-      </div>
-    {% endfor %}
+
+  <!-- Loading -->
+  <div id="test-loading">
+    <div class="ki-loading">
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+      <p>KI erstellt deinen persönlichen Pflegewissen-Test …</p>
+    </div>
+  </div>
+
+  <!-- Test form -->
+  <form id="test-form" class="hidden">
+    <div id="questions-container"></div>
     <div class="form-actions">
-      <button class="button" type="submit">Test auswerten</button>
+      <button class="button" type="submit" id="submit-btn">Test auswerten</button>
     </div>
   </form>
+
+  <!-- Evaluating -->
+  <div id="eval-loading" class="hidden">
+    <div class="ki-loading">
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+      <p>KI bewertet deine Antworten …</p>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="test-result" class="hidden"></div>
+
 </div>
+
+<script>
+let testQuestions = [];
+
+const LEVEL_LABELS = {
+  beginner:     'Einsteiger',
+  intermediate: 'Fortgeschritten',
+  advanced:     'Experte',
+};
+
+// ── Load questions ─────────────────────────────
+fetch('/api/nursing-test/generate')
+  .then(r => r.json())
+  .then(data => {
+    testQuestions = data.questions || [];
+    document.getElementById('test-meta').innerHTML =
+      `<span class="badge">${testQuestions.length} Fragen</span>
+       <span class="badge badge-info">✨ KI-generiert</span>`;
+    renderQuestions(testQuestions);
+    document.getElementById('test-loading').classList.add('hidden');
+    document.getElementById('test-form').classList.remove('hidden');
+  })
+  .catch(() => {
+    document.getElementById('test-loading').innerHTML =
+      '<p class="flash flash-danger">Fehler beim Laden. Bitte Seite neu laden.</p>';
+  });
+
+// ── Render ─────────────────────────────────────
+function renderQuestions(questions) {
+  document.getElementById('questions-container').innerHTML = questions.map((q, i) => {
+    const isFreeTxt = q.type === 'free_text';
+    const counter = `<div class="question-counter">Frage ${i + 1} / ${questions.length}${
+      isFreeTxt ? ' <span class="multi-hint">(Freitext)</span>' : ''
+    }</div>`;
+    const text = `<p class="question-text"><strong>${escHtml(q.question)}</strong></p>`;
+    let input;
+    if (isFreeTxt) {
+      input = `<input class="text-answer-input" type="text" name="answer_${i}"
+                      placeholder="Deine Antwort …" autocomplete="off">`;
+    } else {
+      input = (q.options || []).map(opt =>
+        `<label class="option-label">
+           <input type="radio" name="answer_${i}" value="${escAttr(opt)}" required>
+           <span>${escHtml(opt)}</span>
+         </label>`
+      ).join('');
+    }
+    return `<div class="question-block">${counter}${text}${input}</div>`;
+  }).join('');
+}
+
+// ── Submit ─────────────────────────────────────
+document.getElementById('test-form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  const answers = {};
+  testQuestions.forEach((_, i) => {
+    const el = this.elements['answer_' + i];
+    answers[i] = el ? el.value : '';
+  });
+
+  this.classList.add('hidden');
+  document.getElementById('eval-loading').classList.remove('hidden');
+
+  fetch('/api/nursing-test/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ questions: testQuestions, answers })
+  })
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('eval-loading').classList.add('hidden');
+    renderResults(data);
+    document.getElementById('test-result').classList.remove('hidden');
+  })
+  .catch(() => {
+    document.getElementById('eval-loading').classList.add('hidden');
+    document.getElementById('test-form').classList.remove('hidden');
+    alert('Fehler bei der Auswertung. Bitte erneut versuchen.');
+  });
+});
+
+// ── Results ────────────────────────────────────
+function renderResults(data) {
+  const pct = Math.round(data.score / data.total * 100) || 0;
+  const scoreClass = pct >= 80 ? 'score-good' : pct >= 50 ? 'score-ok' : 'score-low';
+  const levelLabel = LEVEL_LABELS[data.level] || data.level;
+  const results = data.results || [];
+
+  const detailHtml = results.map((r, i) =>
+    `<div class="question-block ${r.is_correct ? 'correct' : 'wrong'}">
+       <div class="answer-status">${r.is_correct ? '✓' : '✗'}</div>
+       <p><strong>${i + 1}. ${escHtml(r.question)}</strong></p>
+       <p>Deine Antwort: <em>${escHtml(r.student_answer || '(keine Angabe)')}</em></p>
+       ${r.feedback ? `<p class="ai-feedback">${escHtml(r.feedback)}</p>` : ''}
+       ${!r.is_correct
+         ? `<p class="correct-hint">Musterantwort: <strong>${escHtml(r.correct_answer)}</strong></p>`
+         : ''}
+     </div>`
+  ).join('');
+
+  document.getElementById('test-result').innerHTML =
+    `<h2>Dein Ergebnis</h2>
+     <div class="result-summary">
+       <div class="result-score ${scoreClass}">${data.score}/${data.total}</div>
+       <div class="result-info">
+         <p class="result-pct">${pct}% richtig</p>
+         <p>Dein Pflegewissen-Niveau: <strong class="badge">${escHtml(levelLabel)}</strong></p>
+       </div>
+     </div>
+     <section class="answer-review">
+       <h2>Antworten im Detail</h2>
+       ${detailHtml}
+     </section>
+     <div class="actions-row">
+       <a class="button" href="/student">Zum Dashboard →</a>
+     </div>`;
+}
+
+function escHtml(str) {
+  const d = document.createElement('div'); d.textContent = String(str || ''); return d.innerHTML;
+}
+function escAttr(str) { return String(str || '').replace(/"/g, '&quot;'); }
+</script>
 {% endblock %}

@@ -15,7 +15,7 @@
           {% if current_user.role == 'student' %}
             <a href="{{ url_for('student_dashboard') }}">Dashboard</a>
             <a href="{{ url_for('courses') }}">Kurse</a>
-            <a href="{{ url_for('ai_professor') }}">KI-Professorin</a>
+            <a href="{{ url_for('ki_lehrer') }}">KI-Lehrer</a>
           {% else %}
             <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a>
             <a href="{{ url_for('create_course') }}">Kurs erstellen</a>

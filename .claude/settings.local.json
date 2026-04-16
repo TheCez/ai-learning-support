@@ -6,7 +6,13 @@
       "Bash(python -m pip install \"Flask-SQLAlchemy==3.1.1\" --quiet)",
       "Bash(python -c \"from google import genai; print\\(genai.__version__\\)\")",
       "Bash(python -m pip list)",
-      "Bash(\"C:\\\\Users\\\\DominikSchulz\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m pip install google-genai python-dotenv --quiet)"
+      "Bash(\"C:\\\\Users\\\\DominikSchulz\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m pip install google-genai python-dotenv --quiet)",
+      "Bash(venv/Scripts/python.exe app.py)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(del /F instance\\\\\\\\carelearn.db)",
+      "Bash(cmd.exe /c \"taskkill /F /IM python.exe 2>nul & timeout /t 2 /nobreak >nul & del /F instance\\\\\\\\carelearn.db\")",
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(cmd.exe /c \"taskkill /F /IM python.exe 2>nul\")"
     ]
   }
 }

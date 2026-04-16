@@ -1,20 +1,167 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="panel">
-  <h1>Quiz: {{ module.title }}</h1>
-  <form method="post">
-    {% for question in module.quiz_questions %}
-      <div class="question-block">
-        <p><strong>{{ loop.index }}. {{ question.question }}</strong></p>
-        {% for option in question.options.split(';') %}
-          <label class="option-label">
-            <input type="{{ 'checkbox' if question.multi_choice else 'radio' }}" name="question_{{ question.id }}" value="{{ option }}" {% if not question.multi_choice %}required{% endif %}>
-            {{ option }}
-          </label>
-        {% endfor %}
+
+  <!-- Loading state -->
+  <div id="quiz-loading">
+    <h1>Quiz: {{ module.title }}</h1>
+    <div class="ki-loading">
+      <div class="loading-dots"><span></span><span></span><span></span></div>
+      <p>KI generiert personalisierte Fragen für dich …</p>
+    </div>
+  </div>
+
+  <!-- Quiz form (hidden until questions load) -->
+  <div id="quiz-content" class="hidden">
+    <h1>Quiz: {{ module.title }}</h1>
+    <p class="meta ai-badge">✨ KI-generierte Fragen – adaptiv für dein Sprachniveau</p>
+    <form id="quiz-form">
+      <div id="questions-container"></div>
+      <div class="form-actions">
+        <button class="button" type="submit" id="quiz-submit-btn">Quiz auswerten</button>
       </div>
-    {% endfor %}
-    <button class="button" type="submit">Quiz beenden</button>
-  </form>
+    </form>
+  </div>
+
+  <!-- Results (hidden until submitted) -->
+  <div id="quiz-result" class="hidden"></div>
+
 </div>
+
+<script>
+const moduleId = {{ module.id }};
+const courseId = {{ course_id }};
+let quizQuestions = [];
+
+// ── Load questions on page load ────────────────
+fetch('/api/quiz/generate/' + moduleId)
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      document.getElementById('quiz-loading').innerHTML =
+        '<p class="flash flash-danger">' + escHtml(data.error) + '</p>';
+      return;
+    }
+    quizQuestions = data.questions;
+    renderQuestions(quizQuestions);
+    document.getElementById('quiz-loading').classList.add('hidden');
+    document.getElementById('quiz-content').classList.remove('hidden');
+  })
+  .catch(() => {
+    document.getElementById('quiz-loading').innerHTML =
+      '<p class="flash flash-danger">Fehler beim Laden der Fragen. Bitte Seite neu laden.</p>';
+  });
+
+// ── Render question blocks ─────────────────────
+function renderQuestions(questions) {
+  const container = document.getElementById('questions-container');
+  container.innerHTML = questions.map((q, i) => {
+    const counter = `<div class="question-counter">Frage ${i + 1} / ${questions.length}${
+      q.type === 'free_text' ? ' <span class="multi-hint">(Freitext)</span>' : ''
+    }</div>`;
+    const text = `<p class="question-text"><strong>${escHtml(q.question)}</strong></p>`;
+
+    let input = '';
+    if (q.type === 'multiple_choice') {
+      input = (q.options || []).map(opt =>
+        `<label class="option-label">
+           <input type="radio" name="answer_${i}" value="${escAttr(opt)}" required>
+           <span>${escHtml(opt)}</span>
+         </label>`
+      ).join('');
+    } else {
+      input = `<input class="text-answer-input" type="text" name="answer_${i}"
+                      placeholder="Deine Antwort auf Deutsch …" autocomplete="off">`;
+    }
+    return `<div class="question-block">${counter}${text}${input}</div>`;
+  }).join('');
+}
+
+// ── Submit ─────────────────────────────────────
+document.getElementById('quiz-form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  const answers = {};
+  quizQuestions.forEach((q, i) => {
+    const el = this.elements['answer_' + i];
+    answers[i] = el ? el.value : '';
+  });
+
+  document.getElementById('quiz-content').classList.add('hidden');
+  document.getElementById('quiz-loading').innerHTML =
+    '<div class="ki-loading"><div class="loading-dots"><span></span><span></span><span></span></div>' +
+    '<p>KI bewertet deine Antworten …</p></div>';
+  document.getElementById('quiz-loading').classList.remove('hidden');
+
+  fetch('/api/quiz/submit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ module_id: moduleId, questions: quizQuestions, answers })
+  })
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('quiz-loading').classList.add('hidden');
+    renderResults(data);
+    document.getElementById('quiz-result').classList.remove('hidden');
+  })
+  .catch(() => {
+    document.getElementById('quiz-loading').innerHTML =
+      '<p class="flash flash-danger">Fehler bei der Auswertung. Bitte erneut versuchen.</p>';
+  });
+});
+
+// ── Render results ─────────────────────────────
+function renderResults(data) {
+  const pct = data.pct;
+  const score = data.score;
+  const total = data.total;
+  const results = data.results || [];
+
+  const scoreClass = pct >= 80 ? 'score-good' : pct >= 50 ? 'score-ok' : 'score-low';
+  const msg = pct === 100 ? 'Perfekt! Alle Fragen richtig.' :
+              pct >= 80  ? 'Sehr gut! Du hast das Thema gut verstanden.' :
+              pct >= 50  ? 'Gut gemacht! Schau dir die Korrekturen an.' :
+                           'Weiter üben! Lies den Modulinhalt noch einmal durch.';
+
+  const detailHtml = results.map((r, i) =>
+    `<div class="question-block ${r.is_correct ? 'correct' : 'wrong'}">
+       <div class="answer-status">${r.is_correct ? '✓' : '✗'}</div>
+       <p><strong>${i + 1}. ${escHtml(r.question)}</strong></p>
+       <p>Deine Antwort: <em>${escHtml(r.student_answer || '(keine Angabe)')}</em></p>
+       ${r.feedback ? `<p class="ai-feedback">${escHtml(r.feedback)}</p>` : ''}
+       ${!r.is_correct
+         ? `<p class="correct-hint">Musterantwort: <strong>${escHtml(r.correct_answer)}</strong></p>`
+         : ''}
+     </div>`
+  ).join('');
+
+  document.getElementById('quiz-result').innerHTML =
+    `<h1>Quiz-Ergebnis</h1>
+     <div class="result-summary">
+       <div class="result-score ${scoreClass}">${score}/${total}</div>
+       <div class="result-info">
+         <p class="result-pct">${pct}% richtig</p>
+         <p>${msg}</p>
+       </div>
+     </div>
+     <p class="meta"><span class="badge badge-info">✨ KI-bewertet</span></p>
+     <section class="answer-review">
+       <h2>Antworten im Detail</h2>
+       ${detailHtml}
+     </section>
+     <div class="actions-row">
+       <a class="button" href="/courses/${courseId}/module/${moduleId}">Modul erneut ansehen</a>
+       <a class="button button-secondary" href="/student">Zum Dashboard</a>
+     </div>`;
+}
+
+// ── Helpers ────────────────────────────────────
+function escHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = String(str || '');
+  return d.innerHTML;
+}
+function escAttr(str) {
+  return String(str || '').replace(/"/g, '&quot;');
+}
+</script>
 {% endblock %}

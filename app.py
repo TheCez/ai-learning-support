@@ -5,7 +5,11 @@ load_dotenv()
 from flask import Flask, render_template, request, redirect, url_for, flash, session
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, User, Course, Module, Enrollment, QuizQuestion, QuizAttempt
-from services import init_db, calculate_language_level, calculate_nursing_level, LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response
+from services import (init_db, calculate_language_level, calculate_nursing_level,
+                      LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response,
+                      call_gemini_chat, build_ki_lehrer_system_prompt,
+                      generate_ai_quiz, evaluate_ai_answers,
+                      generate_language_test_questions, generate_nursing_test_questions)
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///carelearn.db'
@@ -140,43 +144,83 @@ def student_dashboard(user):
 
 
 # ── Onboarding-Tests ───────────────────────────
-@app.route('/language-test', methods=['GET', 'POST'])
+@app.route('/language-test', methods=['GET'])
 @login_required(role='student')
 def language_test(user):
-    if request.method == 'POST':
-        score = 0
-        for idx, question in enumerate(LANGUAGE_TEST):
-            answer = request.form.get(f'question_{idx}', '')
-            if answer == question['answer']:
-                score += 1
-        user.language_score = score
-        user.language_level = calculate_language_level(score)
-        db.session.commit()
-        flash(f'Sprachtest abgeschlossen – dein Niveau: {user.language_level}', 'success')
-        return redirect(url_for('nursing_test'))
-    return render_template('language_test.html', questions=LANGUAGE_TEST)
+    return render_template('language_test.html')
 
 
-@app.route('/nursing-test', methods=['GET', 'POST'])
+@app.route('/api/language-test/generate', methods=['GET'])
+@login_required(role='student')
+def api_language_test_generate(user):
+    from flask import jsonify
+    questions = generate_language_test_questions()
+    if not questions:
+        # Fallback to static questions converted to unified format
+        questions = [
+            {'type': 'multiple_choice', 'question': q['question'],
+             'options': q['choices'], 'answer': q['answer']}
+            for q in LANGUAGE_TEST
+        ]
+    return jsonify({'questions': questions})
+
+
+@app.route('/api/language-test/submit', methods=['POST'])
+@login_required(role='student')
+def api_language_test_submit(user):
+    from flask import jsonify
+    data = request.get_json(silent=True) or {}
+    questions = data.get('questions', [])
+    answers = {str(k): v for k, v in data.get('answers', {}).items()}
+
+    results = evaluate_ai_answers(questions, answers, user.language_level or 'A1')
+    score = sum(r['score'] for r in results)
+
+    user.language_score = score
+    user.language_level = calculate_language_level(score)
+    db.session.commit()
+
+    return jsonify({'score': score, 'total': len(results),
+                    'level': user.language_level, 'results': results})
+
+
+@app.route('/nursing-test', methods=['GET'])
 @login_required(role='student')
 def nursing_test(user):
-    if request.method == 'POST':
-        score = 0
-        for idx, question in enumerate(NURSING_TEST):
-            if question.get('multi'):
-                selected = set(request.form.getlist(f'question_{idx}'))
-                expected = set(question['answer'].split(';'))
-                if selected == expected:
-                    score += 1
-            else:
-                if request.form.get(f'question_{idx}') == question['answer']:
-                    score += 1
-        user.nursing_score = score
-        user.nursing_level = calculate_nursing_level(score)
-        db.session.commit()
-        flash(f'Pflegewissen-Test abgeschlossen – dein Niveau: {user.nursing_level}', 'success')
-        return redirect(url_for('student_dashboard'))
-    return render_template('nursing_test.html', questions=NURSING_TEST)
+    return render_template('nursing_test.html')
+
+
+@app.route('/api/nursing-test/generate', methods=['GET'])
+@login_required(role='student')
+def api_nursing_test_generate(user):
+    from flask import jsonify
+    questions = generate_nursing_test_questions()
+    if not questions:
+        questions = [
+            {'type': 'multiple_choice' if not q.get('multi') else 'multiple_choice',
+             'question': q['question'], 'options': q['choices'], 'answer': q['answer']}
+            for q in NURSING_TEST
+        ]
+    return jsonify({'questions': questions})
+
+
+@app.route('/api/nursing-test/submit', methods=['POST'])
+@login_required(role='student')
+def api_nursing_test_submit(user):
+    from flask import jsonify
+    data = request.get_json(silent=True) or {}
+    questions = data.get('questions', [])
+    answers = {str(k): v for k, v in data.get('answers', {}).items()}
+
+    results = evaluate_ai_answers(questions, answers, user.language_level or 'A1')
+    score = sum(r['score'] for r in results)
+
+    user.nursing_score = score
+    user.nursing_level = calculate_nursing_level(score)
+    db.session.commit()
+
+    return jsonify({'score': score, 'total': len(results),
+                    'level': user.nursing_level, 'results': results})
 
 
 # ── Kurse ──────────────────────────────────────
@@ -221,52 +265,66 @@ def course_module(user, course_id, module_id):
     return render_template('module_detail.html', course=course, module=module, last_attempt=last_attempt)
 
 
-@app.route('/courses/<int:course_id>/module/<int:module_id>/quiz', methods=['GET', 'POST'])
+@app.route('/courses/<int:course_id>/module/<int:module_id>/quiz', methods=['GET'])
 @login_required(role='student')
 def course_quiz(user, course_id, module_id):
     module = Module.query.get_or_404(module_id)
-    if not module.quiz_questions:
-        flash('Dieses Modul hat noch keine Quiz-Fragen.', 'warning')
-        return redirect(url_for('course_module', course_id=course_id, module_id=module_id))
-
-    if request.method == 'POST':
-        answers = []
-        score = 0
-        for question in module.quiz_questions:
-            selected = request.form.getlist(f'question_{question.id}')
-            correct = question.answer.split(';')
-            if question.multi_choice:
-                if set(selected) == set(correct):
-                    score += 1
-            else:
-                if selected and selected[0] == correct[0]:
-                    score += 1
-            answers.append({
-                'question': question.question,
-                'selected': selected,
-                'correct': correct,
-                'is_correct': set(selected) == set(correct) if question.multi_choice else (selected and selected[0] == correct[0])
-            })
-
-        attempt = QuizAttempt(student_id=user.id, module_id=module.id, score=score)
-        db.session.add(attempt)
-
-        # Modul-Fortschritt im Enrollment aktualisieren
-        enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=module.course_id).first()
-        if enrollment:
-            done = db.session.query(QuizAttempt.module_id).distinct()\
-                .join(Module, QuizAttempt.module_id == Module.id)\
-                .filter(Module.course_id == module.course_id, QuizAttempt.student_id == user.id)\
-                .count()
-            enrollment.completed_modules = done + 1  # +1 weil dieser Versuch noch nicht committed ist
-
-        db.session.commit()
-
-        total = len(module.quiz_questions)
-        pct = int(score / total * 100) if total else 0
-        return render_template('quiz_result.html', module=module, course_id=course_id, score=score, total=total, pct=pct, answers=answers)
-
     return render_template('quiz.html', module=module, course_id=course_id)
+
+
+@app.route('/api/quiz/generate/<int:module_id>', methods=['GET'])
+@login_required(role='student')
+def api_quiz_generate(user, module_id):
+    from flask import jsonify
+    module = Module.query.get_or_404(module_id)
+    questions = generate_ai_quiz(module, user.language_level or 'A2')
+    if not questions:
+        # Fallback: convert static DB questions if available
+        if module.quiz_questions:
+            questions = []
+            for q in module.quiz_questions:
+                opts = q.options.split(';') if q.options else []
+                questions.append({
+                    'id': q.id, 'type': 'multiple_choice',
+                    'question': q.question, 'options': opts,
+                    'answer': q.answer.split(';')[0],
+                })
+        else:
+            return jsonify({'error': 'Keine Fragen verfügbar – bitte Seite neu laden.'}), 503
+    return jsonify({'questions': questions})
+
+
+@app.route('/api/quiz/submit', methods=['POST'])
+@login_required(role='student')
+def api_quiz_submit(user):
+    from flask import jsonify
+    data = request.get_json(silent=True) or {}
+    module_id = data.get('module_id')
+    questions = data.get('questions', [])
+    answers = {str(k): v for k, v in data.get('answers', {}).items()}
+
+    if not module_id or not questions:
+        return jsonify({'error': 'Fehlende Daten'}), 400
+
+    module = Module.query.get_or_404(module_id)
+    results = evaluate_ai_answers(questions, answers, user.language_level or 'A2')
+    score = sum(r['score'] for r in results)
+    total = len(results)
+    pct = int(score / total * 100) if total else 0
+
+    attempt = QuizAttempt(student_id=user.id, module_id=module.id, score=score)
+    db.session.add(attempt)
+
+    enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=module.course_id).first()
+    if enrollment:
+        done = db.session.query(QuizAttempt.module_id).distinct()\
+            .join(Module, QuizAttempt.module_id == Module.id)\
+            .filter(Module.course_id == module.course_id, QuizAttempt.student_id == user.id)\
+            .count()
+        enrollment.completed_modules = done + 1
+
+    db.session.commit()
+    return jsonify({'score': score, 'total': total, 'pct': pct, 'results': results})
 
 
 # ── Lehrer-Bereich ─────────────────────────────
@@ -454,6 +512,57 @@ def ai_professor_api(user):
             course_context = '\n\n'.join(parts)
 
     response_text = get_ai_professor_response(topic, user.language_level, course_context)
+    return jsonify({'response': response_text})
+
+
+# ── KI-Lehrer (interaktiver Avatar-Unterricht) ─
+@app.route('/ki-lehrer')
+@login_required(role='student')
+def ki_lehrer(user):
+    enrolled_courses = [e.course for e in user.enrollments]
+    return render_template('ki_lehrer.html', user=user, enrolled_courses=enrolled_courses)
+
+
+@app.route('/api/ki-lehrer', methods=['POST'])
+@login_required(role='student')
+def ki_lehrer_api(user):
+    from flask import jsonify
+    data = request.get_json(silent=True) or {}
+    module_id   = data.get('module_id')
+    conversation = data.get('conversation', [])   # [{role:'user'|'model', text:'...'}]
+    is_greeting  = data.get('greeting', False)
+
+    module_title = module_content = course_title = ''
+    if module_id:
+        module = Module.query.get(module_id)
+        if module:
+            module_title   = module.title
+            module_content = module.content or module.description or ''
+            course_title   = module.course.title if module.course else ''
+
+    system = build_ki_lehrer_system_prompt(
+        user.first_name, user.language_level,
+        module_title, course_title, module_content
+    )
+
+    # Welcome without module: brief general greeting
+    if is_greeting and not module_id and not conversation:
+        welcome_system = (
+            f"Du bist Professor Wagner, ein freundlicher Pflegepädagoge auf der careLearn-Plattform. "
+            f"Begrüße {user.first_name} herzlich mit 2–3 Sätzen, erkläre kurz dass du als KI-Lehrer "
+            f"Pflegethemen erklären kannst, und fordere sie/ihn auf, oben ein Modul auszuwählen. "
+            f"Sprich {user.first_name} mit Vornamen an. Immer auf Deutsch. Keine Aufzählungen."
+        )
+        response_text = call_gemini_chat(welcome_system, [{'role': 'user', 'text': '__WELCOME__'}])
+        return jsonify({'response': response_text})
+
+    # Begrüßungs-Trigger: leere History → synthetische User-Nachricht
+    if is_greeting and not conversation:
+        contents = [{'role': 'user', 'text': '__GREETING__'}]
+    else:
+        contents = [{'role': c['role'], 'text': c['text']} for c in conversation[-20:]]
+
+    response_text = call_gemini_chat(system, contents)
     return jsonify({'response': response_text})
 
 

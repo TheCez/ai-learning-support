@@ -47,6 +47,11 @@ def inject_user():
 
 
 # ── Öffentliche Seiten ─────────────────────────
+@app.route('/favicon.ico')
+def favicon():
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#1a5c8a"/><path d="M16 25C16 25 7 18.5 7 13.5C7 10.46 9.46 8 12.5 8C14.24 8 15.91 8.9 17 10.18C18.09 8.9 19.76 8 21.5 8C24.54 8 27 10.46 27 13.5C27 18.5 16 25 16 25Z" fill="white" opacity="0.9"/><line x1="16" y1="12" x2="16" y2="18" stroke="#1a5c8a" stroke-width="1.8" stroke-linecap="round"/><line x1="13" y1="15" x2="19" y2="15" stroke="#1a5c8a" stroke-width="1.8" stroke-linecap="round"/></svg>'
+    return svg, 200, {'Content-Type': 'image/svg+xml', 'Cache-Control': 'max-age=86400'}
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -673,16 +678,15 @@ def ki_lehrer_api(user):
 
 @app.route('/api/tts-proxy', methods=['POST'])
 def tts_proxy():
-    """TTS via ElevenLabs for TalkingHead lip sync.
+    """TTS proxy for TalkingHead lip sync.
+
+    Primary:  ElevenLabs Alice voice (best quality, requires API key + credits)
+    Fallback: edge-tts Microsoft neural voice (free, no key needed)
 
     TalkingHead sends:  { "input": {"ssml": "..."}, "voice": {...}, "audioConfig": {...} }
     We return:          { "audioContent": "<base64 MP3>", "timepoints": [] }
     """
-    import re as _re, base64, json as _j, urllib.request, urllib.error
-
-    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
-    if not api_key:
-        return _j.dumps({'error': 'ELEVENLABS_API_KEY not set'}), 503, {'Content-Type': 'application/json'}
+    import re as _re, base64, json as _j, urllib.request, urllib.error, asyncio, io, tempfile, os as _os
 
     data = request.get_json(silent=True) or {}
     inp  = data.get('input') or {}
@@ -692,31 +696,47 @@ def tts_proxy():
     if not text:
         return _j.dumps({'error': 'no text'}), 400, {'Content-Type': 'application/json'}
 
-    voice_id = 'Xb7hH8MSUJpSbSDYk0k2'   # ElevenLabs "Alice" – multilingual, good German
-    payload  = _j.dumps({
-        'text':     text,
-        'model_id': 'eleven_multilingual_v2',
-        'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2},
-    }).encode('utf-8')
+    # ── 1. Try ElevenLabs if API key present ──────────────────────
+    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
+    if api_key:
+        voice_id = 'Xb7hH8MSUJpSbSDYk0k2'
+        payload  = _j.dumps({
+            'text':     text,
+            'model_id': 'eleven_multilingual_v2',
+            'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2},
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
+            data=payload, method='POST'
+        )
+        req.add_header('xi-api-key', api_key)
+        req.add_header('Content-Type', 'application/json')
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                audio_bytes = r.read()
+            encoded = base64.b64encode(audio_bytes).decode('utf-8')
+            return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
+                   {'Content-Type': 'application/json; charset=utf-8'}
+        except (urllib.error.HTTPError, urllib.error.URLError, Exception):
+            pass  # any ElevenLabs failure → fall through to edge-tts
 
-    req = urllib.request.Request(
-        f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
-        data=payload, method='POST'
-    )
-    req.add_header('xi-api-key', api_key)
-    req.add_header('Content-Type', 'application/json')
-
+    # ── 2. Fallback: edge-tts (Microsoft neural, free) ────────────
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            audio_bytes = r.read()
-    except urllib.error.HTTPError as e:
-        return e.read(), e.code, {'Content-Type': 'application/json'}
-    except Exception as e:
-        return _j.dumps({'error': str(e)}), 500, {'Content-Type': 'application/json'}
+        import edge_tts
 
-    encoded = base64.b64encode(audio_bytes).decode('utf-8')
-    # TalkingHead requires 'timepoints' key — without it crashes internally, silencing audio
-    return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, {'Content-Type': 'application/json; charset=utf-8'}
+        async def _synth(t):
+            buf = io.BytesIO()
+            async for chunk in edge_tts.Communicate(t, voice='de-DE-KatjaNeural').stream():
+                if chunk['type'] == 'audio':
+                    buf.write(chunk['data'])
+            return buf.getvalue()
+
+        audio_bytes = asyncio.run(_synth(text))
+        encoded = base64.b64encode(audio_bytes).decode('utf-8')
+        return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
+               {'Content-Type': 'application/json; charset=utf-8'}
+    except Exception as e:
+        return _j.dumps({'error': f'edge-tts failed: {e}'}), 500, {'Content-Type': 'application/json'}
 
 
 @app.route('/api/stt', methods=['POST'])
@@ -752,9 +772,11 @@ def stt_proxy():
             result = _j.loads(r.read())
             return _j.dumps({'text': result.get('text', '')}), 200, {'Content-Type': 'application/json'}
     except urllib.error.HTTPError as e:
-        return e.read(), e.code, {'Content-Type': 'application/json'}
+        body = e.read()
+        # Return a structured error so the frontend can fall back gracefully
+        return _j.dumps({'error': f'stt_unavailable', 'status': e.code}), 200, {'Content-Type': 'application/json'}
     except Exception as e:
-        return _j.dumps({'error': str(e)}), 500, {'Content-Type': 'application/json'}
+        return _j.dumps({'error': 'stt_unavailable'}), 200, {'Content-Type': 'application/json'}
 
 
 @app.route('/debug-env')

@@ -3,13 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>careLearn – Pflegeausbildung</title>
+  <title>Cura – Learn to Care</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <a class="topbar-brand" href="{{ url_for('index') }}">careLearn</a>
+      <a class="topbar-brand" href="{{ url_for('index') }}">
+        <!-- Cura Logo: Heart with medical cross -->
+        <svg class="topbar-logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="40" height="40" rx="10" fill="#1a5c8a"/>
+          <path d="M20 30C20 30 10 22.5 10 16.5C10 13.46 12.46 11 15.5 11C17.42 11 19.09 11.98 20 13.5C20.91 11.98 22.58 11 24.5 11C27.54 11 30 13.46 30 16.5C30 22.5 20 30 20 30Z" fill="white" opacity="0.9"/>
+          <line x1="20" y1="15" x2="20" y2="22" stroke="#1a5c8a" stroke-width="2" stroke-linecap="round"/>
+          <line x1="16.5" y1="18.5" x2="23.5" y2="18.5" stroke="#1a5c8a" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <div class="topbar-brand-text">
+          <span class="topbar-brand-name">Cura</span>
+          <span class="topbar-brand-tagline">Learn to Care</span>
+        </div>
+      </a>
       <nav class="topbar-nav">
         {% if current_user %}
           {% if current_user.role == 'student' %}
@@ -44,7 +56,7 @@
     </main>
 
     <footer class="site-footer">
-      <p>careLearn &copy; 2025 – Digitale Lernplattform für Pflegeausbildung</p>
+      Cura &mdash; Learn to Care &copy; 2025 &nbsp;·&nbsp; Digitale Lernplattform für die Pflegeausbildung
     </footer>
   </div>
 </body>

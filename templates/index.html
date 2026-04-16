@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="hero">
-  <h1>Willkommen bei careLearn</h1>
-  <p>Die Lernplattform für Pflegeschulen – mit adaptiven Kursen, Quizzes und KI-Unterstützung auf deinem Sprachniveau.</p>
+  <h1>Willkommen bei <span>Cura</span></h1>
+  <p>Die smarte Lernplattform für Pflegeschulen – mit adaptiven Kursen, KI-Unterricht und Spaced-Repetition-Quizzes, angepasst an dein Sprachniveau.</p>
   {% if not current_user %}
   <div class="hero-actions">
     <a class="button" href="{{ url_for('register') }}">Jetzt registrieren</a>

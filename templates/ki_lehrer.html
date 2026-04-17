@@ -164,112 +164,269 @@ let klAutoSpeak      = true;
 let klContinuousMode = false;
 
 // ── Slides ────────────────────────────────────
-let klSlides   = [];   // [{title, bullets, source, images}]
+let klSlides   = [];   // [{title, bullets, source, images, spoken_text}]
 let klSlideIdx = -1;
-let klSlideAdvanceInterval = null; // Timer for auto-advancing slides
+let klPresentationAbort = false; // Flag to stop presentation if user navigates
+
+function estimateSpeechFallbackMs(text) {
+  const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1200, words * 380);
+}
+
+async function fetchTtsAudioBlob(text) {
+  const response = await fetch('/api/tts-proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: { text } })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.audioContent) {
+    throw new Error(payload.error || `TTS proxy failed with status ${response.status}`);
+  }
+
+  const binary = atob(payload.audioContent);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: 'audio/mpeg' });
+}
+
+function playAudioAndWait(text) {
+  return new Promise(async (resolve) => {
+    let resolved = false;
+    let safetyTimer = null;
+    let audioUrl = null;
+
+    const safeResolve = () => {
+      if (resolved) return;
+      resolved = true;
+      if (safetyTimer) clearTimeout(safetyTimer);
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      resolve();
+    };
+
+    try {
+      const phrase = String(text || '').trim();
+      if (!phrase) {
+        safeResolve();
+        return;
+      }
+
+      const avatar = window.klAvatarHead;
+      if (!avatar || typeof avatar.speakText !== 'function') {
+        await window.klSpeakFallback(phrase);
+        safeResolve();
+        return;
+      }
+
+      const audioBlob = await fetchTtsAudioBlob(phrase);
+      audioUrl = URL.createObjectURL(audioBlob);
+
+      const syncAudio = new Audio(audioUrl);
+      syncAudio.preload = 'auto';
+      syncAudio.muted = true;
+      syncAudio.playsInline = true;
+
+      syncAudio.addEventListener('ended', safeResolve, { once: true });
+      syncAudio.addEventListener('error', safeResolve, { once: true });
+      syncAudio.addEventListener('abort', safeResolve, { once: true });
+      syncAudio.addEventListener('loadedmetadata', () => {
+        if (resolved) return;
+        const durationMs = Number.isFinite(syncAudio.duration) && syncAudio.duration > 0
+          ? Math.ceil(syncAudio.duration * 1000)
+          : estimateSpeechFallbackMs(phrase);
+        safetyTimer = setTimeout(() => {
+          console.warn('[KI-Lehrer Presentation] HTML5 audio timeout fallback triggered');
+          safeResolve();
+        }, durationMs + 1500);
+      }, { once: true });
+
+      // Fire avatar speech in parallel; hidden HTML5 audio controls progression.
+      void Promise.resolve(window.klSpeak(phrase)).catch((err) => {
+        console.warn('[KI-Lehrer Presentation] Avatar speech rejected:', err);
+      });
+
+      try {
+        await syncAudio.play();
+      } catch (playErr) {
+        console.warn('[KI-Lehrer Presentation] HTML5 audio playback failed:', playErr);
+        safeResolve();
+      }
+    } catch (e) {
+      console.error('[KI-Lehrer Presentation] Audio failed:', e);
+      safeResolve();
+    }
+  });
+}
 
 function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Estimate audio duration in milliseconds (approx. 150 words/min = 2.5 words/sec)
-function estimateAudioDurationMs(text) {
-  const wordCount = (text || '').split(/\s+/).filter(w => w.length > 0).length;
-  const secondsPerWord = 0.4; // 2.5 words/sec
-  return Math.max(3000, Math.min(60000, wordCount * secondsPerWord * 1000)); // Clamp to 3-60s
+async function waitForAvatarToFinish() {
+  return new Promise((resolve) => {
+    const avatar = window.klAvatarHead;
+    if (!avatar) {
+      setTimeout(resolve, 1500);
+      return;
+    }
+
+    let silenceCount = 0;
+    const requiredSilentChecks = 3; // 3 * 500ms = 1.5s sustained silence
+
+    const clearAndResolve = () => {
+      clearInterval(checkInterval);
+      clearTimeout(hardTimeout);
+      resolve();
+    };
+
+    const checkInterval = setInterval(() => {
+      if (klPresentationAbort) {
+        clearAndResolve();
+        return;
+      }
+
+      // Primary signal from TalkingHead docs/code: avatar.isSpeaking.
+      // Queue/state checks are extra safety for chunked or delayed segments.
+      const speakingFlag = avatar.isSpeaking === true;
+      const queueBusy = Array.isArray(avatar.speechQueue) && avatar.speechQueue.length > 0;
+      const playlistBusy = Array.isArray(avatar.audioPlaylist) && avatar.audioPlaylist.length > 0;
+      const stateSpeaking = avatar.stateName === 'speaking';
+      const isSpeaking = speakingFlag || queueBusy || playlistBusy || stateSpeaking;
+
+      if (!isSpeaking) {
+        silenceCount += 1;
+        if (silenceCount >= requiredSilentChecks) {
+          clearAndResolve();
+        }
+      } else {
+        silenceCount = 0;
+      }
+    }, 500);
+
+    // Absolute guard against hangs if state callbacks fail.
+    const hardTimeout = setTimeout(clearAndResolve, 90000);
+  });
 }
 
-// Set slides array and start carousel display
-function klSetSlides(slidesArray, spokenText) {
+async function playPresentation(slides) {
+  if (!Array.isArray(slides) || !slides.length) return;
+
+  console.log(`[KI-Lehrer Presentation] Starting async presentation with ${slides.length} slides`);
+
+  for (let i = 0; i < slides.length; i++) {
+    if (klPresentationAbort) {
+      console.log('[KI-Lehrer Presentation] Aborted by user navigation');
+      klPresentationAbort = false;
+      break;
+    }
+
+    const slide = slides[i];
+    if (!slide || typeof slide !== 'object') {
+      console.warn(`[KI-Lehrer Presentation] Skipping invalid slide at index ${i}`, slide);
+      continue;
+    }
+
+    klSlideIdx = i;
+    klRenderSlide(true);
+
+    const slideText = String(slide.spoken_text || '').trim();
+    if (slideText) {
+      klAddBubble('professor', slideText);
+
+      // Trigger speech and let TalkingHead internally chunk/queue audio.
+      void Promise.resolve(window.klSpeak(slideText)).catch((err) => {
+        console.warn('[KI-Lehrer Presentation] Avatar speech rejected:', err);
+      });
+
+      // Advance only after sustained silence (debounced) so all chunks are done.
+      await waitForAvatarToFinish();
+    }
+
+    console.log(`Finished slide ${i + 1}`);
+  }
+
+  console.log('[KI-Lehrer Presentation] Presentation complete');
+}
+
+function klSetSlides(slidesArray) {
   if (!Array.isArray(slidesArray) || !slidesArray.length) return;
-  
+
   klSlides = slidesArray;
   klSlideIdx = 0;
-  
-  // Stop any existing auto-advance timer
-  if (klSlideAdvanceInterval) clearInterval(klSlideAdvanceInterval);
-  
-  // Render the first slide immediately
+  klPresentationAbort = false;
   klRenderSlide(true);
-  
-  // Calculate time per slide and start auto-advance
-  const totalDurationMs = estimateAudioDurationMs(spokenText);
-  const timePerSlideMs = Math.max(2000, totalDurationMs / Math.max(1, klSlides.length));
-  
-  console.log(`[KI-Lehrer Carousel] Starting auto-advance: ${klSlides.length} slides over ${totalDurationMs}ms (${timePerSlideMs}ms per slide)`);
-  
-  // Auto-advance slides at regular intervals
-  klSlideAdvanceInterval = setInterval(() => {
-    if (klSlideIdx < klSlides.length - 1) {
-      klSlideIdx++;
-      klRenderSlide(true);
-    } else {
-      // Reached the last slide, stop auto-advance
-      if (klSlideAdvanceInterval) clearInterval(klSlideAdvanceInterval);
-      klSlideAdvanceInterval = null;
-    }
-  }, timePerSlideMs);
-}
 
-// Deprecated: replaced by klSetSlides
-function klSetSlide(title, points, source, images) {
-  if (!title && (!points || !points.length)) return;
-  klSlides.push({ title: title || '', bullets: points || [], source: source || '', images: Array.isArray(images) ? images : [] });
-  klSlideIdx = klSlides.length - 1;
-  klRenderSlide(true);
+  console.log(`[KI-Lehrer Carousel] Starting presentation with ${klSlides.length} slides`);
+
+  if (klAutoSpeak) {
+    playPresentation(klSlides).catch(err => {
+      console.error('[KI-Lehrer Presentation] Unexpected error:', err);
+    });
+  }
 }
 
 function klRenderSlide(animate) {
-  if (klSlides.length === 0) return;
-  const s = klSlides[klSlideIdx];
+  if (!klSlides.length) return;
 
+  const s = klSlides[klSlideIdx] || {};
   const slideEl = document.getElementById('kl-ppt-slide');
-  if (animate) {
+  if (slideEl && animate) {
     slideEl.classList.remove('kl-slide-in');
     void slideEl.offsetWidth;
     slideEl.classList.add('kl-slide-in');
   }
 
-  // Slide counter
-  document.getElementById('kl-ppt-slide-num').textContent =
-    (klSlideIdx + 1) + ' / ' + klSlides.length;
+  const slideNumEl = document.getElementById('kl-ppt-slide-num');
+  if (slideNumEl) {
+    slideNumEl.textContent = (klSlideIdx + 1) + ' / ' + klSlides.length;
+  }
 
-  // Heading
-  document.getElementById('kl-ppt-heading').textContent = s.title;
+  const headingEl = document.getElementById('kl-ppt-heading');
+  if (headingEl) headingEl.textContent = s.title || '';
 
-  // Bullet points (handle both 'bullets' and 'points' keys for compatibility)
   const bulletPoints = Array.isArray(s.bullets) ? s.bullets : (Array.isArray(s.points) ? s.points : []);
-  const ul = document.getElementById('kl-ppt-points');
-  ul.innerHTML = '';
-  bulletPoints.forEach((pt, i) => {
-    const li = document.createElement('li');
-    li.className = 'kl-ppt-point';
-    li.style.animationDelay = animate ? (i * 0.12) + 's' : '0s';
-    const colon = pt.indexOf(':');
-    if (colon > 0 && colon < 42) {
-      li.innerHTML = '<strong>' + escH(pt.slice(0, colon)) + '</strong>: ' + escH(pt.slice(colon + 1).trim());
-    } else {
-      li.textContent = pt;
-    }
-    ul.appendChild(li);
-  });
+  const pointsEl = document.getElementById('kl-ppt-points');
+  if (pointsEl) {
+    pointsEl.innerHTML = '';
+    bulletPoints.forEach((pt, i) => {
+      const li = document.createElement('li');
+      li.className = 'kl-ppt-point';
+      li.style.animationDelay = animate ? (i * 0.12) + 's' : '0s';
+      const text = String(pt || '');
+      const colon = text.indexOf(':');
+      if (colon > 0 && colon < 42) {
+        li.innerHTML = '<strong>' + escH(text.slice(0, colon)) + '</strong>: ' + escH(text.slice(colon + 1).trim());
+      } else {
+        li.textContent = text;
+      }
+      pointsEl.appendChild(li);
+    });
+  }
 
-  // Source anchor
-  const srcEl = document.getElementById('kl-ppt-source');
-  document.getElementById('kl-ppt-source-text').textContent = s.source;
-  srcEl.style.display = s.source ? 'flex' : 'none';
+  const sourceWrap = document.getElementById('kl-ppt-source');
+  const sourceText = document.getElementById('kl-ppt-source-text');
+  if (sourceText) sourceText.textContent = s.source || '';
+  if (sourceWrap) sourceWrap.style.display = s.source ? 'flex' : 'none';
 
-  // Images with explicit port 8000 routing
   const imgWrap = document.getElementById('kl-ppt-img-wrap');
   const imagesEl = document.getElementById('kl-ppt-images');
-  imagesEl.innerHTML = '';
-  const validImages = Array.isArray(s.images) ? s.images.filter(Boolean) : [];
-  if (validImages.length) {
-    // Use only the first image to avoid duplicates
-    let imageUrl = String(validImages[0]);
-    // Forcefully prepend http://localhost:8000 for relative paths
-    let fullImageUrl = imageUrl.startsWith('http') ? imageUrl : 'http://localhost:8000' + imageUrl;
-    // Fix double /api/v1 duplication that can occur when backend prepends full URL
+  const slideBody = document.querySelector('.kl-ppt-slide-body');
+  const rawImageUrl = typeof s.image_url === 'string' ? s.image_url.trim() : '';
+  const fallbackImageUrl = Array.isArray(s.images) && s.images.length ? String(s.images[0] || '').trim() : '';
+  const imageUrl = rawImageUrl || fallbackImageUrl;
+
+  if (slideBody) {
+    slideBody.style.width = imageUrl ? '50%' : '100%';
+    slideBody.style.flex = imageUrl ? '0 0 50%' : '1 1 100%';
+  }
+
+  if (imagesEl) imagesEl.innerHTML = '';
+  if (imageUrl && imagesEl && imgWrap) {
+    let fullImageUrl = imageUrl.startsWith('http')
+      ? imageUrl
+      : 'http://localhost:8000' + (imageUrl.startsWith('/') ? '' : '/') + imageUrl;
     fullImageUrl = fullImageUrl.replace('/api/v1/api/v1/', '/api/v1/');
 
     console.log('[KI-Lehrer Image] Attempting to load image:', fullImageUrl);
@@ -280,53 +437,47 @@ function klRenderSlide(animate) {
     img.loading = 'lazy';
     img.className = 'object-contain max-h-64 w-full rounded';
     imagesEl.appendChild(img);
-
     imgWrap.style.display = 'block';
-  } else {
+  } else if (imgWrap) {
     imgWrap.style.display = 'none';
   }
 
-  // Nav buttons
-  document.getElementById('kl-prev-btn').disabled = klSlideIdx <= 0;
-  document.getElementById('kl-next-btn').disabled = klSlideIdx >= klSlides.length - 1;
+  const prevBtn = document.getElementById('kl-prev-btn');
+  const nextBtn = document.getElementById('kl-next-btn');
+  if (prevBtn) prevBtn.disabled = klSlideIdx <= 0;
+  if (nextBtn) nextBtn.disabled = klSlideIdx >= klSlides.length - 1;
 
-  // Dots
   const dots = document.getElementById('kl-ppt-dots');
-  dots.innerHTML = '';
-  klSlides.forEach((_, i) => {
-    const d = document.createElement('span');
-    d.className = 'kl-ppt-dot' + (i === klSlideIdx ? ' active' : '');
-    d.onclick = () => { 
-      // Clear auto-advance timer if user manually selects a slide
-      if (klSlideAdvanceInterval) {
-        clearInterval(klSlideAdvanceInterval);
-        klSlideAdvanceInterval = null;
-      }
-      klSlideIdx = i; 
-      klRenderSlide(true); 
-    };
-    dots.appendChild(d);
-  });
+  if (dots) {
+    dots.innerHTML = '';
+    klSlides.forEach((_, i) => {
+      const d = document.createElement('span');
+      d.className = 'kl-ppt-dot' + (i === klSlideIdx ? ' active' : '');
+      d.onclick = () => {
+        klPresentationAbort = true;
+        window.speechSynthesis && window.speechSynthesis.cancel();
+        klSlideIdx = i;
+        klRenderSlide(true);
+      };
+      dots.appendChild(d);
+    });
+  }
 }
 
 function klPrevSlide() {
   if (klSlideIdx > 0) { 
-    // Stop auto-advance when user manually navigates
-    if (klSlideAdvanceInterval) {
-      clearInterval(klSlideAdvanceInterval);
-      klSlideAdvanceInterval = null;
-    }
+    // Stop auto-advance presentation when user manually navigates
+    klPresentationAbort = true;
+    window.speechSynthesis && window.speechSynthesis.cancel();
     klSlideIdx--; 
     klRenderSlide(true); 
   }
 }
 function klNextSlide() {
   if (klSlideIdx < klSlides.length - 1) { 
-    // Stop auto-advance when user manually navigates
-    if (klSlideAdvanceInterval) {
-      clearInterval(klSlideAdvanceInterval);
-      klSlideAdvanceInterval = null;
-    }
+    // Stop auto-advance presentation when user manually navigates
+    klPresentationAbort = true;
+    window.speechSynthesis && window.speechSynthesis.cancel();
     klSlideIdx++; 
     klRenderSlide(true); 
   }
@@ -336,18 +487,19 @@ function klNextSlide() {
 
 // ── Modul auswählen ────────────────────────────
 function klOnModuleChange(select) {
+  window.klEnsureAvatarReady && window.klEnsureAvatarReady();
   window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
   const opt = select.options[select.selectedIndex];
   if (!opt.value) return;
 
+  // Stop any ongoing presentation
+  klPresentationAbort = true;
+  window.speechSynthesis && window.speechSynthesis.cancel();
+
   klModuleId     = parseInt(opt.value);
   klCourseId     = opt.dataset.courseId ? String(opt.dataset.courseId) : 'all';
   klConversation = [];
-  // Reset slide stack and auto-advance timer for the new module session
-  if (klSlideAdvanceInterval) {
-    clearInterval(klSlideAdvanceInterval);
-    klSlideAdvanceInterval = null;
-  }
+  // Reset slide stack for the new module session
   klSlides   = [];
   klSlideIdx = -1;
 
@@ -377,6 +529,7 @@ function klOnModuleChange(select) {
 
 // ── Nachricht senden ───────────────────────────
 function klSend() {
+  window.klEnsureAvatarReady && window.klEnsureAvatarReady();
   window.klResumeAudio && window.klResumeAudio(); // unlock AudioContext on user gesture
   const input = document.getElementById('kl-text-input');
   const text  = input.value.trim();
@@ -404,17 +557,25 @@ function klSend() {
   .then(r => r.json())
   .then(data => {
     klRemoveLoadingBubble();
-    const resp = data.spoken_text || data.response || '…';
-    klConversation.push({role: 'model', text: resp});
-    klAddBubble('professor', resp);
+    console.log('Raw LLM Data:', data);
+    const resp = data && (data.spoken_text || data.response) ? (data.spoken_text || data.response) : '';
     
-    // Handle new slides array format
-    if (data.slides && Array.isArray(data.slides) && data.slides.length) {
-      klSetSlides(data.slides, resp);
+    // Handle nested slides schema from backend
+    if (data && Array.isArray(data.slides) && data.slides.length) {
+      const fullSlideText = data.slides
+        .map(s => String(s.spoken_text || '').trim())
+        .filter(Boolean)
+        .join('\n\n');
+      klConversation.push({role: 'model', text: fullSlideText || resp || '…'});
+      klSetSlides(data.slides);
+    } else {
+      const fallbackText = resp || '…';
+      klConversation.push({role: 'model', text: fallbackText});
+      klAddBubble('professor', fallbackText);
+      if (klAutoSpeak) playAudioAndWait(fallbackText);
+      else if (klContinuousMode) setTimeout(klStartMic, 400);
     }
-    
-    if (klAutoSpeak) klSpeak(resp);
-    else if (klContinuousMode) setTimeout(klStartMic, 400);
+
     klIsLoading = false;
     klSetInputEnabled(true);
   })
@@ -499,6 +660,7 @@ async function klDetectSttMode() {
 }
 
 function klToggleMic() {
+  window.klEnsureAvatarReady && window.klEnsureAvatarReady();
   window.klResumeAudio && window.klResumeAudio();
   if (klIsRecording) { klStopContinuous(); return; }
   klContinuousMode = true;
@@ -682,27 +844,35 @@ function klUpdateMicUI() {
 // ── Sprachausgabe ──────────────────────────────
 // Web Speech API fallback (active until TalkingHead overrides window.klSpeak)
 window.klSpeakFallback = function(text) {
-  if (!window.speechSynthesis) { if (klContinuousMode) setTimeout(klStartMic, 400); return; }
-  window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text);
-  utt.lang = 'de-DE'; utt.rate = 0.92; utt.pitch = 1.05;
-  const voices  = speechSynthesis.getVoices();
-  const deVoice = voices.find(v => v.lang.startsWith('de') && !v.name.includes('Google'))
-               || voices.find(v => v.lang.startsWith('de'));
-  if (deVoice) utt.voice = deVoice;
-  utt.onstart = () => klSetSpeaking(true);
-  utt.onend   = () => {
-    klSetSpeaking(false);
-    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 400);
-  };
-  utt.onerror = () => {
-    klSetSpeaking(false);
-    if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 600);
-  };
-  speechSynthesis.speak(utt);
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) {
+      if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 400);
+      resolve();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = 'de-DE'; utt.rate = 0.92; utt.pitch = 1.05;
+    const voices  = speechSynthesis.getVoices();
+    const deVoice = voices.find(v => v.lang.startsWith('de') && !v.name.includes('Google'))
+                 || voices.find(v => v.lang.startsWith('de'));
+    if (deVoice) utt.voice = deVoice;
+    utt.onstart = () => klSetSpeaking(true);
+    utt.onend   = () => {
+      klSetSpeaking(false);
+      if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 400);
+      resolve();
+    };
+    utt.onerror = () => {
+      klSetSpeaking(false);
+      if (klContinuousMode && !klIsLoading) setTimeout(klStartMic, 600);
+      resolve();
+    };
+    speechSynthesis.speak(utt);
+  });
 };
 // TalkingHead module overrides this via window.klSpeak once loaded
-function klSpeak(text) { window.klSpeakFallback(text); }
+function klSpeak(text) { return window.klSpeakFallback(text); }
 // State getter for the ES module (let vars are not on window)
 window.klGetState = () => ({ continuousMode: klContinuousMode, isLoading: klIsLoading });
 function klSetSpeaking(on) {
@@ -742,17 +912,52 @@ import { TalkingHead } from 'talkinghead';
       mixerGainBackground: 0,
     });
 
-    await head.showAvatar({
-      url:         'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/avatars/brunette.glb',
-      body:        'F',
-      avatarMood:  'neutral',
-      ttsLang:     'de-DE',
-      ttsVoice:    'de-DE-Standard-C',
-      ttsRate:     0.92,
-      lipsyncLang: 'fi',
-    });
+    let avatarReady = false;
+    let avatarInitPromise = null;
 
-    if (fallbackEl) fallbackEl.style.display = 'none';
+    const ensureAvatarReady = async () => {
+      if (avatarReady) return;
+      if (avatarInitPromise) {
+        await avatarInitPromise;
+        return;
+      }
+
+      avatarInitPromise = (async () => {
+        await head.showAvatar({
+          url:         'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/avatars/brunette.glb',
+          body:        'F',
+          avatarMood:  'neutral',
+          ttsLang:     'de-DE',
+          ttsVoice:    'de-DE-Standard-C',
+          ttsRate:     0.92,
+          lipsyncLang: 'fi',
+        });
+
+        avatarReady = true;
+        if (fallbackEl) fallbackEl.style.display = 'none';
+      })();
+
+      await avatarInitPromise;
+    };
+
+    window.klEnsureAvatarReady = () => {
+      void ensureAvatarReady().catch((e) => {
+        console.warn('Avatar lazy init failed:', e);
+      });
+    };
+
+    // Prime avatar loading only after a real user gesture to satisfy autoplay policy.
+    const gestureEvents = ['pointerdown', 'keydown', 'touchstart'];
+    const onFirstGesture = () => {
+      window.klEnsureAvatarReady && window.klEnsureAvatarReady();
+      window.klResumeAudio && window.klResumeAudio();
+      gestureEvents.forEach((ev) => {
+        document.removeEventListener(ev, onFirstGesture, true);
+      });
+    };
+    gestureEvents.forEach((ev) => {
+      document.addEventListener(ev, onFirstGesture, { once: true, capture: true });
+    });
 
     // Expose AudioContext resume so the regular script can unlock it on user gestures.
     // Browsers suspend AudioContext until a user gesture happens — this must be called
@@ -763,9 +968,12 @@ import { TalkingHead } from 'talkinghead';
       }
     };
 
+    window.klAvatarHead = head;
+
     // Override global klSpeak – TalkingHead handles TTS + lip sync together
     window.klSpeak = async function(text) {
       if (!text) return;
+      await ensureAvatarReady();
       // Ensure AudioContext is running before queuing audio
       if (head.audioCtx && head.audioCtx.state !== 'running') {
         try { await head.audioCtx.resume(); } catch(e) {}
@@ -775,7 +983,7 @@ import { TalkingHead } from 'talkinghead';
         await head.speakText(text);
       } catch (err) {
         console.warn('TalkingHead TTS error, falling back to Web Speech:', err);
-        window.klSpeakFallback(text);
+        await window.klSpeakFallback(text);
         return;
       }
       window.klSetSpeaking(false);

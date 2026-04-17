@@ -320,48 +320,13 @@ def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = 
         
         response = requests.post(generate_presentation_url, json=payload, timeout=30)
         response.raise_for_status()
-        
+
+        # Preserve the LLM response shape (including per-slide spoken_text)
+        # so the frontend can run an event-driven slide/audio loop.
         result = response.json()
-        
-        # Extract spoken text (all slides concatenated)
-        spoken_text = result.get('spoken_text', '')
-        
-        # Handle both single slide and array of slides from backend
-        slides_data = result.get('slides', [])
-        if not slides_data:
-            # Fallback to single slide format
-            single_slide = result.get('slide', {})
-            if single_slide:
-                slides_data = [single_slide]
-        
-        # Format slides for frontend
-        formatted_slides = []
-        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000')
-        
-        for slide in slides_data:
-            # Process images for this slide
-            slide_images = slide.get('images', []) or slide.get('image_url', [])
-            if isinstance(slide_images, str):
-                slide_images = [slide_images]
-            
-            formatted_images = []
-            for img_url in slide_images:
-                if img_url and not img_url.startswith('http'):
-                    # Prepend RAG API base if relative
-                    img_url = f"{rag_base}{img_url}"
-                formatted_images.append(img_url)
-            
-            formatted_slides.append({
-                'title': slide.get('title', ''),
-                'bullets': slide.get('bullets', []) or slide.get('points', []),
-                'source': slide.get('source', ''),
-                'images': formatted_images,
-            })
-        
-        return {
-            'response': spoken_text,
-            'slides': formatted_slides,
-        }
+        if isinstance(result, dict):
+            return result
+        return {'slides': []}
     
     except requests.exceptions.Timeout:
         return {

@@ -244,7 +244,7 @@ def calculate_nursing_level(score: int) -> str:
     return 'advanced'
 
 
-def get_ai_professor_response(topic: str, student_level: str, course_context: str = '') -> str:
+def get_ai_professor_response(topic: str, student_level: str, course_context: str = '', student_context: str = '') -> str:
     """Antwortet mit Google Gemini, mit optionalem Kursinhalts-Kontext."""
     if not topic:
         topic = 'Pflegewissen allgemein'
@@ -290,6 +290,10 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
                 f"{course_context}\n"
             )
 
+        student_section = ''
+        if student_context:
+            student_section = f"\n\n## Schülerprofil\n{student_context}\nPasse Erklärungen an diesen Hintergrund an.\n"
+
         system_instruction = (
             f"Du bist Professor KI, ein einfühlsamer und geduldiger Pflegepädagoge. "
             f"Du sprichst auf Sprachniveau {student_level} ({level_desc}). "
@@ -297,7 +301,7 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
             f"Verknüpfe Theorie immer mit konkreten Pflegesituationen aus dem Alltag. "
             f"Halte deine Antwort kompakt (4–6 Sätze). "
             f"Beende mit einer kurzen Reflexionsfrage, die zum Nachdenken anregt."
-            f"{course_section}"
+            f"{course_section}{student_section}"
         )
 
         client = genai.Client(api_key=api_key)
@@ -387,7 +391,8 @@ def build_ki_lehrer_system_prompt(first_name: str, language_level: str,
                                    module_title: str, course_title: str,
                                    module_content: str,
                                    today_module_title: str = '',
-                                   today_course_title: str = '') -> str:
+                                   today_course_title: str = '',
+                                   student_context: str = '') -> str:
     level_desc = {
         'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, nur Grundvokabular – jeden Fachbegriff sofort erklären',
         'A2': 'einfaches Deutsch mit Alltagsausdrücken, kurze klare Sätze',
@@ -425,7 +430,7 @@ Deine Erklärungen MÜSSEN sich auf diesen offiziellen Inhalt beziehen:
         'Keine langen Einleitungen.'
     )
 
-    return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
+    prompt_text = f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
 Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title}).
 
 ## Persönlichkeit
@@ -448,6 +453,149 @@ Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title})
 - Jede Antwort endet mit einer Frage (außer bei direkten Faktenfragen)
 - Off-topic-Fragen sanft zurück zum Thema lenken
 - Immer auf Deutsch antworten{module_section}{today_section}"""
+
+    if student_context:
+        prompt_text += f"\n\n## Schülerprofil\n{student_context}\nPasse Erklärungen an diesen Hintergrund an."
+    return prompt_text
+
+
+# ════════════════════════════════════════════════════════════
+#  FALLSTUDIE – Killer-Demo: Blutdruckmessung bei Frau Schmidt
+# ════════════════════════════════════════════════════════════
+
+FALL_BLUTDRUCK = {
+    'slug': 'blutdruck-frau-schmidt',
+    'title': 'Blutdruckmessung bei Frau Schmidt',
+    'level': 'B1',
+    'duration_min': 5,
+    'patient': {
+        'name': 'Frau Schmidt',
+        'age': 78,
+        'room': 'Zimmer 214',
+        'complaint': 'Schwindel beim Aufstehen',
+        'history': 'Bekannte Hypertonie, nimmt Ramipril 5 mg morgens',
+        'order': 'Bitte Blutdruck korrekt am rechten Oberarm messen und dokumentieren.',
+    },
+    'steps': [
+        {'key': 'identitaet', 'label': 'Patientin identifizieren',
+         'hint': 'Name + Geburtsdatum gegen Armband prüfen',
+         'kw': ['identit', 'armband', 'geburt', 'name prüf', 'wer sind', 'überprüf', 'kontrollier', 'wie heißen']},
+        {'key': 'aufklaerung', 'label': 'Maßnahme erklären (Aufklärung)',
+         'hint': 'Erklären, was passiert, und Einverständnis einholen',
+         'kw': ['erklär', 'aufklär', 'einverständnis', 'einverstanden', 'was ich mache', 'darf ich']},
+        {'key': 'ruhe', 'label': '5 Minuten Ruhepause',
+         'hint': 'Patientin in Ruhe sitzen oder liegen lassen',
+         'kw': ['ruhe', '5 minuten', 'fünf minuten', 'entspann', 'warten', 'rast']},
+        {'key': 'manschette', 'label': 'Korrekte Manschettengröße wählen',
+         'hint': 'Oberarmumfang messen, passende Manschette auswählen',
+         'kw': ['manschette', 'größe', 'umfang', 'oberarm', 'breit']},
+        {'key': 'herzhoehe', 'label': 'Manschette in Herzhöhe anlegen',
+         'hint': 'Arm bequem lagern, Manschette 2-3 cm über der Ellenbeuge',
+         'kw': ['herzhöhe', 'herz höhe', 'höhe des herz', 'ellenbeu', 'unterstütz', 'arm lagern', 'arm liegt', 'ablegen']},
+        {'key': 'messen', 'label': 'Messung durchführen',
+         'hint': 'Manschette aufpumpen, langsam ablassen, Werte ablesen',
+         'kw': ['aufpump', 'aufpumpen', 'ablassen', 'ableass', 'stethoskop', 'messen', 'messung', 'ablesen', 'systol', 'diastol']},
+        {'key': 'dokumentieren', 'label': 'Werte dokumentieren & melden',
+         'hint': 'Werte in der Pflegekurve eintragen, bei Auffälligkeiten Arzt informieren',
+         'kw': ['dokument', 'aufschreib', 'notier', 'eintrag', 'kurve', 'arzt informier', 'arzt sagen', 'arzt bescheid', 'meld']},
+    ],
+    'vocab': [
+        ('systolisch',     'oberer Wert beim Blutdruck'),
+        ('diastolisch',    'unterer Wert beim Blutdruck'),
+        ('Manschette',     'aufblasbare Hülle für die Messung'),
+        ('Hypertonie',     'erhöhter Blutdruck'),
+        ('Riva-Rocci',     'Erfinder der Blutdruckmessung – Abkürzung „RR"'),
+        ('Auskultation',   'Abhören mit dem Stethoskop'),
+    ],
+}
+
+
+def detect_fall_steps(case: dict, user_text: str, already_done: list) -> list:
+    """Return the keys of newly-completed steps after this user message."""
+    text = (user_text or '').lower()
+    newly = []
+    for step in case['steps']:
+        if step['key'] in already_done:
+            continue
+        if any(kw in text for kw in step['kw']):
+            newly.append(step['key'])
+    return newly
+
+
+def build_fall_blutdruck_prompt(first_name: str, language_level: str,
+                                completed_keys: list, last_completed: str = '') -> str:
+    """System prompt for the Frau-Schmidt blood-pressure case study."""
+    case = FALL_BLUTDRUCK
+    p = case['patient']
+    level_desc = {
+        'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, Fachbegriffe sofort erklären',
+        'A2': 'einfaches Deutsch, kurze klare Sätze, alltagsnahe Worte',
+        'B1': 'klares Standarddeutsch, Pflegefachbegriffe mit kurzer Erklärung',
+        'B2': 'normales Pflegedeutsch, Fachterminologie frei',
+        'C1': 'vollständige medizinische Terminologie',
+    }.get(language_level, 'verständliches Deutsch')
+
+    done_set = set(completed_keys or [])
+    steps_lines = []
+    next_step = None
+    for i, s in enumerate(case['steps'], start=1):
+        mark = '[✓]' if s['key'] in done_set else '[ ]'
+        steps_lines.append(f"{mark} {i}. {s['label']} — {s['hint']}")
+        if next_step is None and s['key'] not in done_set:
+            next_step = s
+    steps_block = '\n'.join(steps_lines)
+
+    progress_note = ''
+    if last_completed:
+        last_step = next((s for s in case['steps'] if s['key'] == last_completed), None)
+        if last_step:
+            progress_note = (
+                f'\n\n## SOEBEN KORREKT GENANNT\n'
+                f'„{last_step["label"]}" — bestätige das in 1 Satz positiv und konkret '
+                f'(z. B. „Genau, du prüfst das Armband — sicher!"), '
+                f'dann gehe direkt zum NÄCHSTEN offenen Schritt über.'
+            )
+
+    next_block = ''
+    if next_step:
+        next_block = (
+            f'\n\n## NÄCHSTER ZU ERFRAGENDER SCHRITT\n'
+            f'{next_step["label"]} — {next_step["hint"]}\n'
+            f'Stelle dazu EINE kurze offene Frage. Verrate die Antwort NICHT vorab.'
+        )
+    else:
+        next_block = (
+            '\n\n## ALLE SCHRITTE ABGESCHLOSSEN\n'
+            f'Fasse den Fall in 2 Sätzen zusammen, lobe {first_name} ehrlich '
+            'und beende mit „Damit ist der Fall abgeschlossen."'
+        )
+
+    return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge.
+Du leitest {first_name} (Sprachniveau {language_level}) Schritt für Schritt durch eine reale Pflegesituation.
+
+## Patientin
+- {p['name']}, {p['age']} Jahre, {p['room']}
+- Beschwerde: {p['complaint']}
+- Vorerkrankung: {p['history']}
+- Auftrag: {p['order']}
+
+## Sprache
+{level_desc}. Halte Antworten KURZ — max. 3 Sätze.
+
+## Persönlichkeit
+- Du nennst dich nie „KI" — du bist Prof. Wagner
+- Sanft, ermutigend, geduldig
+- Sprichst {first_name} mit Vornamen an
+
+## Ablauf-Checkliste (nutze sie als roten Faden)
+{steps_block}{progress_note}{next_block}
+
+## Regeln
+- Genau EINE Frage pro Antwort
+- Niemals mehrere Schritte gleichzeitig abfragen
+- Keine Aufzählungen, kein Markdown — nur fließender Text
+- Bei „__GREETING__" sage exakt: „{first_name}, wir gehen ins Zimmer 214 zu Frau Schmidt. Sie klagt über Schwindel — was machst du als Erstes?"
+"""
 
 
 def _strip_md_code(text: str) -> str:
@@ -499,6 +647,159 @@ def generate_slide_from_speech(speech: str, module_title: str) -> tuple:
                 continue
             break
     return '', []
+
+
+# ── Student context helper for AI prompts ─────────────
+def build_student_context(user) -> str:
+    """Build a context string describing the student for AI prompts."""
+    parts = [f"Schülerprofil: {user.first_name} {user.last_name}"]
+    parts.append(f"Sprachniveau: {user.language_level or 'A1'}")
+    parts.append(f"Pflegewissen: {user.nursing_level or 'beginner'}")
+    if user.country:
+        parts.append(f"Herkunftsland: {user.country}")
+    if user.language:
+        parts.append(f"Muttersprache: {user.language}")
+    if user.speciality:
+        parts.append(f"Fachbereich: {user.speciality}")
+    return '\n'.join(parts)
+
+
+def generate_flashcards(module, language_level: str, num_cards: int = 6) -> list:
+    """Generate flashcards for a module using AI."""
+    if not _load_gemini():
+        return []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return []
+
+    content = (module.content or module.description or '')[:2500]
+    level_hint = {
+        'A1': 'sehr einfaches Deutsch', 'A2': 'einfaches Deutsch',
+        'B1': 'klares Standarddeutsch', 'B2': 'normales Pflegedeutsch',
+        'C1': 'gehobenes Pflegefachdeutsch',
+    }.get(language_level, 'klares Deutsch')
+
+    prompt = (
+        f'Erstelle genau {num_cards} Lernkarten (Karteikarten) auf Deutsch über "{module.title}".\n'
+        f'Grundlage:\n{content}\n\n'
+        f'Sprachniveau: {language_level} ({level_hint})\n'
+        f'Jede Karte hat eine Vorderseite (Frage/Begriff) und Rückseite (Antwort/Erklärung).\n'
+        f'Rückseite: max. 2 kurze Sätze.\n\n'
+        f'Antworte NUR mit validem JSON:\n'
+        f'{{"cards":[{{"front":"Begriff oder Frage","back":"Kurze Erklärung"}}]}}'
+    )
+
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=800, temperature=0.4)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            data = _json.loads(_strip_md_code(resp.text))
+            cards = data.get('cards', [])
+            if cards:
+                return cards[:num_cards]
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return []
+
+
+def generate_library_summary(module, language_level: str, student_context: str = '') -> str:
+    """Generate a simplified library-style summary of module content."""
+    if not _load_gemini():
+        return ''
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return ''
+
+    content = (module.content or module.description or '')[:3000]
+    level_hint = {
+        'A1': 'sehr einfaches Deutsch, kurze Sätze, Grundvokabular',
+        'A2': 'einfaches Deutsch mit Alltagsausdrücken',
+        'B1': 'klares Standarddeutsch',
+        'B2': 'normales Pflegedeutsch',
+        'C1': 'gehobenes Pflegefachdeutsch',
+    }.get(language_level, 'klares Deutsch')
+
+    ctx = f'\n{student_context}\n' if student_context else ''
+    prompt = (
+        f'Vereinfache den folgenden Pflegeinhalt für eine Bibliotheks-Lesekarte.\n'
+        f'Sprachniveau: {language_level} ({level_hint})\n{ctx}'
+        f'Inhalt:\n{content}\n\n'
+        f'Regeln:\n'
+        f'- Verwende einfache, klare Sprache passend zum Niveau\n'
+        f'- Strukturiere mit Überschriften und kurzen Absätzen\n'
+        f'- Erkläre Fachbegriffe in Klammern\n'
+        f'- Max. 300 Wörter\n'
+        f'- Füge am Ende 3 Schlüsselbegriffe hinzu'
+    )
+
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=600, temperature=0.4)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            return resp.text
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return ''
+
+
+def generate_library_cards(module, language_level: str, student_context: str = '') -> list:
+    """Generate structured library topic cards with simple + technical language."""
+    if not _load_gemini():
+        return []
+    api_key = os.environ.get('GOOGLE_API_KEY', '')
+    if not api_key:
+        return []
+
+    content = (module.content or module.description or '')[:3000]
+    level_hint = {
+        'A1': 'sehr einfaches Deutsch, kurze Sätze, Grundvokabular',
+        'A2': 'einfaches Deutsch mit Alltagsausdrücken',
+        'B1': 'klares Standarddeutsch',
+        'B2': 'normales Pflegedeutsch',
+        'C1': 'gehobenes Pflegefachdeutsch',
+    }.get(language_level, 'klares Deutsch')
+
+    ctx = f'\n{student_context}\n' if student_context else ''
+    prompt = (
+        f'Erstelle 3-5 Bibliotheks-Themenkarten aus dem folgenden Pflegeinhalt.\n'
+        f'Sprachniveau des Studenten: {language_level} ({level_hint})\n{ctx}'
+        f'Inhalt:\n{content}\n\n'
+        f'Antworte NUR als JSON-Array. Jedes Element hat:\n'
+        f'- "category": Oberkategorie in GROSSBUCHSTABEN (z.B. VITALZEICHEN, PFLEGETECHNIK, HYGIENE, DOKUMENTATION, KOMMUNIKATION)\n'
+        f'- "title": Kurzer Titel des Themas\n'
+        f'- "simple": Erklärung in einfacher Sprache (2-3 Sätze, passend zum Niveau {language_level})\n'
+        f'- "technical": Gleicher Inhalt in Fachsprache (2-3 Sätze, B2/C1 Niveau)\n\n'
+        f'Beispiel:\n'
+        f'[{{"category":"VITALZEICHEN","title":"Blutdruck messen",'
+        f'"simple":"Blutdruck ist der Druck, mit dem das Blut gegen die Wände der Adern drückt. Wir messen zwei Werte: den hohen Wert (wenn das Herz drückt) und den niedrigen Wert (wenn das Herz ruht). Normal ist etwa 120 zu 80.",'
+        f'"technical":"Die Blutdruckmessung erfolgt nach Riva-Rocci. Systolischer Wert: Druck während der Herzkontraktion. Diastolischer Wert: Druck während der Herzrelaxation. Normwert: 120/80 mmHg."}}]\n'
+        f'Antworte NUR mit dem JSON-Array, kein Markdown.'
+    )
+
+    import json as _json
+    client = genai.Client(api_key=api_key)
+    cfg = genai_types.GenerateContentConfig(max_output_tokens=1200, temperature=0.4)
+    for model in _MODELS:
+        try:
+            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+            text = resp.text.strip()
+            if text.startswith('```'):
+                text = text.split('\n', 1)[1] if '\n' in text else text[3:]
+                text = text.rsplit('```', 1)[0]
+            cards = _json.loads(text)
+            if isinstance(cards, list):
+                return cards
+        except Exception as e:
+            if any(c in str(e) for c in _RETRY_CODES):
+                continue
+            break
+    return []
 
 
 def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
@@ -1081,9 +1382,90 @@ def _seed_demo_courses(teacher_id: int):
     db.session.commit()
 
 
+_DEMO_STUDENTS = [
+    # (first, last, country, language, speciality, level, nursing, xp)
+    ('Aylin',   'Yılmaz',     'Türkei',     'Türkisch',         'Krankenpflege',         'B2', 'fortgeschritten', 1840),
+    ('Mateusz', 'Kowalski',   'Polen',      'Polnisch',         'Altenpflege',           'B1', 'fortgeschritten', 1520),
+    ('Maria',   'Santos',     'Philippinen','Filipino / Tagalog','Intensivpflege',       'B2', 'fortgeschritten', 1380),
+    ('Andrei',  'Popescu',    'Rumänien',   'Rumänisch',        'Krankenpflege',         'B1', 'mittel',          1100),
+    ('Fatima',  'El Amrani',  'Marokko',    'Arabisch',         'Geriatrie',             'A2', 'mittel',           880),
+    ('Linh',    'Nguyen',     'Vietnam',    'Vietnamesisch',    'Kinderkrankenpflege',   'B1', 'mittel',           720),
+    ('Olena',   'Shevchenko', 'Ukraine',    'Ukrainisch',       'Notfallpflege',         'A2', 'mittel',           560),
+    ('Carlos',  'Ferreira',   'Portugal',   'Portugiesisch',    'Palliativpflege',       'B1', 'mittel',           430),
+    ('Amara',   'Okafor',     'Sonstiges',  'Englisch',         'Allgemeine Pflege',     'A2', 'beginner',         260),
+    ('Goran',   'Petrović',   'Serbien',    'Serbisch',         'OP-Pflege',             'A2', 'beginner',         140),
+]
+
+
+def _seed_demo_students():
+    """Seed demo students once so the leaderboard is populated on a fresh DB."""
+    from werkzeug.security import generate_password_hash
+    from datetime import date as _date, timedelta
+    from models import DailyGoal
+
+    today = _date.today()
+    for first, last, country, language, speciality, level, nursing, xp in _DEMO_STUDENTS:
+        email = f'demo.{first.lower()}@cura.local'
+        if User.query.filter_by(email=email).first():
+            continue
+        student = User(
+            role='student',
+            email=email,
+            password_hash=generate_password_hash('demo'),
+            first_name=first,
+            last_name=last,
+            country=country,
+            language=language,
+            speciality=speciality,
+            language_level=level,
+            nursing_level=nursing,
+            language_score=8 if level in ('B1', 'B2') else 5,
+            nursing_score=8 if nursing == 'fortgeschritten' else (6 if nursing == 'mittel' else 3),
+            xp=xp,
+        )
+        db.session.add(student)
+        db.session.flush()
+        # Give them a recent daily-goal record so streak/leaderboard look natural
+        db.session.add(DailyGoal(
+            student_id=student.id,
+            date=today - timedelta(days=1),
+            target_xp=50,
+            earned_xp=60,
+        ))
+    db.session.commit()
+
+
 def init_db(app):
     with app.app_context():
         db.create_all()
+
+        # Migrations: add columns + indexes if missing (safe for existing DBs)
+        _migrations = [
+            'ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)',
+            'ALTER TABLE quiz_attempt ADD COLUMN max_score INTEGER DEFAULT 5',
+            'ALTER TABLE quiz_attempt ADD COLUMN pct INTEGER DEFAULT 0',
+            'ALTER TABLE quiz_attempt ADD COLUMN next_review_at DATETIME',
+            'ALTER TABLE user ADD COLUMN xp INTEGER DEFAULT 0',
+            'CREATE INDEX IF NOT EXISTS ix_user_email ON user(email)',
+            'CREATE INDEX IF NOT EXISTS ix_enrollment_student_id ON enrollment(student_id)',
+            'CREATE INDEX IF NOT EXISTS ix_enrollment_course_id ON enrollment(course_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_enrollment_student_course ON enrollment(student_id, course_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_student_id ON quiz_attempt(student_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_module_id ON quiz_attempt(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_completed_at ON quiz_attempt(completed_at)',
+            'CREATE INDEX IF NOT EXISTS ix_module_course_id ON module(course_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_question_module_id ON quiz_question(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_flashcard_module_id ON flashcard(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_flashcard_progress_student_id ON flashcard_progress(student_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_goal_student_date ON daily_goal(student_id, date)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_lotto_week_position ON lotto_winner(week_date, position)',
+        ]
+        for stmt in _migrations:
+            try:
+                db.session.execute(db.text(stmt))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
         from werkzeug.security import generate_password_hash
         teacher = User.query.filter_by(email='lehrer@carelearn.de').first()
@@ -1100,19 +1482,6 @@ def init_db(app):
             )
             db.session.add(teacher)
             db.session.commit()
-
-        # Migrations: add columns if missing
-        for stmt in [
-            'ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)',
-            'ALTER TABLE quiz_attempt ADD COLUMN max_score INTEGER DEFAULT 5',
-            'ALTER TABLE quiz_attempt ADD COLUMN pct INTEGER DEFAULT 0',
-            'ALTER TABLE quiz_attempt ADD COLUMN next_review_at DATETIME',
-        ]:
-            try:
-                db.session.execute(db.text(stmt))
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
 
         # All known demo title sets (old and new) for cleanup
         OLD_DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
@@ -1152,3 +1521,5 @@ def init_db(app):
                 if c.owner_id != demo_owner.id:
                     c.owner_id = demo_owner.id
             db.session.commit()
+
+        _seed_demo_students()

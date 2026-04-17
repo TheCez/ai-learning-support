@@ -12,31 +12,84 @@
 </div>
 {% endif %}
 
-<div class="grid-two">
-  <section class="card">
-    <h2>Willkommen, {{ user.first_name }} 👋</h2>
-    <div class="level-grid">
-      <div class="level-chip">
-        <span class="level-label">Deutschniveau</span>
-        <span class="level-value level-lang">{{ user.language_level }}</span>
-      </div>
-      <div class="level-chip">
-        <span class="level-label">Pflegewissen</span>
-        <span class="level-value level-nursing">{{ user.nursing_level }}</span>
-      </div>
-    </div>
-    {% if user.speciality %}
-    <p class="meta">Fachrichtung: {{ user.speciality }}</p>
-    {% endif %}
-    {% if user.country and user.country != 'Deutschland' %}
-    <p class="meta">Herkunftsland: {{ user.country }}</p>
-    {% endif %}
-    <div class="actions-row" style="margin-top:16px">
-      <a class="button button-sm button-secondary" href="{{ url_for('language_test') }}">Sprachtest wiederholen</a>
-      <a class="button button-sm button-secondary" href="{{ url_for('nursing_test') }}">Pflegetest wiederholen</a>
-    </div>
-  </section>
+<!-- Mission des Tages -->
+<div class="mission-hero">
+  <div class="mission-tag">✨ Mission des Tages</div>
+  <h2 class="mission-title">Blutdruck messen bei Frau Schmidt</h2>
+  <p class="mission-desc">
+    5 Minuten: Sprich mit Prof. Wagner über einen echten Patientenfall — er fragt zurück,
+    korrigiert live und führt dich durch alle 7 Schritte. Per Stimme, auf deinem Niveau {{ user.language_level }}.
+  </p>
+  <div class="mission-actions">
+    <a class="button" href="{{ url_for('fall_blutdruck') }}">🎓 Mission starten →</a>
+    <a class="button button-secondary" href="{{ url_for('learning_page') }}">Lieber frei lernen</a>
+  </div>
+</div>
 
+<!-- Stats row -->
+<div class="stat-grid">
+  <div class="stat-tile">
+    <span class="stat-icon stat-icon-fire">🔥</span>
+    <span class="stat-label">Streak</span>
+    <span class="stat-value">{{ stats.streak }}</span>
+    <span class="stat-unit">{% if stats.streak == 1 %}Tag{% else %}Tage{% endif %}</span>
+  </div>
+  <div class="stat-tile">
+    <span class="stat-icon stat-icon-rank">🏅</span>
+    <span class="stat-label">Rang</span>
+    <span class="stat-value">#{{ stats.rank }}</span>
+    <span class="stat-unit">von {{ stats.total_students }}</span>
+  </div>
+  <div class="stat-tile">
+    <span class="stat-icon stat-icon-xp">⭐</span>
+    <span class="stat-label">XP</span>
+    <span class="stat-value">{{ stats.xp }}</span>
+    <span class="stat-unit">gesamt</span>
+  </div>
+  <div class="stat-tile">
+    <span class="stat-icon stat-icon-quiz">✅</span>
+    <span class="stat-label">Quizzes</span>
+    <span class="stat-value">{{ stats.quizzes }}</span>
+    <span class="stat-unit">absolviert</span>
+  </div>
+</div>
+
+<!-- Quick Actions -->
+<h3 style="margin: 28px 0 14px; font-size: 18px; font-weight: 700;">Schneller Einstieg</h3>
+<div class="quick-grid">
+  <a class="quick-card quick-card-highlight" href="{{ url_for('fall_blutdruck') }}">
+    <div class="quick-card-icon">�‍⚕️</div>
+    <div class="quick-card-text">
+      <h4>Fallstudie · Prof. Wagner</h4>
+      <p>Voice-Gespräch am Patientenfall</p>
+    </div>
+  </a>
+  <a class="quick-card" href="{{ url_for('learning_page') }}">
+    <div class="quick-card-icon" style="background:var(--primary-light);">📚</div>
+    <div class="quick-card-text">
+      <h4>Karteikarten</h4>
+      <p>15 Min. Spaced Repetition</p>
+    </div>
+  </a>
+  <a class="quick-card" href="{{ url_for('ki_lehrer') }}">
+    <div class="quick-card-icon" style="background:var(--accent-light);">🎓</div>
+    <div class="quick-card-text">
+      <h4>KI-Lehrer (Avatar)</h4>
+      <p>Freies Gespräch starten</p>
+    </div>
+  </a>
+</div>
+
+<!-- Chips: Level -->
+<div class="chip-row" style="margin-bottom:20px;">
+  <span class="chip chip-primary">Deutsch · {{ user.language_level }}</span>
+  <span class="chip chip-success">Pflege · {{ user.nursing_level }}</span>
+  {% if user.speciality %}<span class="chip">{{ user.speciality }}</span>{% endif %}
+  {% if user.country and user.country != 'Deutschland' %}<span class="chip">{{ user.country }}</span>{% endif %}
+</div>
+
+<div class="grid-two">
+  <!-- Enrolled courses -->
   <section class="card">
     <div class="card-header-row">
       <h2>Meine Kurse</h2>
@@ -61,58 +114,29 @@
       <a class="button button-sm" href="{{ url_for('courses') }}">Kurse entdecken</a>
     {% endif %}
   </section>
+
+  <!-- Due reviews -->
+  <section class="card">
+    <h2>📅 Wiederholungen</h2>
+    {% if due_reviews %}
+      <ul class="list">
+        {% for item in due_reviews %}
+        <li class="course-list-item">
+          <div style="flex:1">
+            <strong>{{ item.module_title }}</strong>
+            <span class="meta"> – {{ item.course_title }}</span>
+            <div class="meta" style="margin-top:2px">
+              {{ item.pct }}% · fällig {{ item.due_since }}
+            </div>
+          </div>
+          <a class="button button-sm" href="{{ item.quiz_url }}">Wiederholen</a>
+        </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="empty-hint">Keine Wiederholungen fällig — gut gemacht! 🎉</p>
+    {% endif %}
+  </section>
 </div>
-
-<section class="card">
-  <div class="card-header-row">
-    <h2>Empfohlene Kurse</h2>
-    <a class="button button-sm button-secondary" href="{{ url_for('courses') }}">Alle ansehen</a>
-  </div>
-  {% if available %}
-    <div class="course-grid">
-      {% for course in available[:4] %}
-        <article class="course-card">
-          <div class="course-card-level badge">{{ course.recommended_level }}</div>
-          <h3>{{ course.title }}</h3>
-          <p>{{ course.summary }}</p>
-          <a class="button button-sm" href="{{ url_for('course_detail', course_id=course.id) }}">Kurs ansehen</a>
-        </article>
-      {% endfor %}
-    </div>
-  {% else %}
-    <p class="empty-hint">Du hast bereits alle verfügbaren Kurse eingeschrieben.</p>
-  {% endif %}
-</section>
-
-{% if due_reviews %}
-<section class="card">
-  <h2>📅 Wiederholungen fällig</h2>
-  <p class="meta">Spaced Repetition – diese Module sind jetzt zur Wiederholung empfohlen:</p>
-  <ul class="list">
-    {% for item in due_reviews %}
-    <li class="course-list-item">
-      <div style="flex:1">
-        <strong>{{ item.module_title }}</strong>
-        <span class="meta"> – {{ item.course_title }}</span>
-        <div class="meta" style="margin-top:2px">
-          Letztes Ergebnis: <strong>{{ item.pct }}%</strong> · fällig seit {{ item.due_since }}
-        </div>
-      </div>
-      <a class="button button-sm" href="{{ item.quiz_url }}">Jetzt wiederholen</a>
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-<section class="card ki-card">
-  <div class="ki-card-inner">
-    <div>
-      <h2>KI-Professorin</h2>
-      <p>Stelle Fragen zu Pflegethemen und erhalte Erklärungen auf deinem Sprachniveau ({{ user.language_level }}).</p>
-    </div>
-    <a class="button" href="{{ url_for('ai_professor') }}">KI-Professorin öffnen</a>
-  </div>
-</section>
 
 {% endblock %}

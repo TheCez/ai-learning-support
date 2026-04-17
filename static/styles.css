@@ -1076,6 +1076,19 @@ input:focus, select:focus, textarea:focus {
   flex: 1; padding: 22px 28px 16px;
   display: flex; flex-direction: column; justify-content: center; gap: 12px;
 }
+
+.kl-ppt-content-row {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  padding: 16px;
+  align-items: stretch;
+}
+
+.kl-ppt-content-row .kl-ppt-slide-body {
+  width: 50%;
+  padding: 6px 4px 6px 6px;
+}
 .kl-ppt-heading {
   margin: 0;
   font-size: clamp(14px, 2.2vw, 22px);
@@ -1107,12 +1120,52 @@ input:focus, select:focus, textarea:focus {
 }
 
 .kl-ppt-slide-img-wrap {
-  margin: 0 16px 8px;
+  width: 50%;
+  margin: 0;
   border-radius: var(--radius-sm);
-  overflow: hidden; flex-shrink: 0;
+  overflow: hidden;
+  flex-shrink: 0;
   border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
 }
-.kl-ppt-slide-img-wrap img { display: block; width: 100%; max-height: 130px; object-fit: cover; }
+
+.kl-ppt-images {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+}
+
+.kl-ppt-slide-img-wrap img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Utility-like classes used by KI-Lehrer slide images */
+.object-contain { object-fit: contain !important; }
+.max-h-64 { max-height: 16rem !important; }
+.w-full { width: 100% !important; }
+.rounded { border-radius: var(--radius-sm) !important; }
+
+@media (max-width: 980px) {
+  .kl-ppt-content-row {
+    flex-direction: column;
+  }
+
+  .kl-ppt-content-row .kl-ppt-slide-body,
+  .kl-ppt-slide-img-wrap {
+    width: 100%;
+  }
+}
 
 .kl-ppt-source {
   display: flex; align-items: flex-start; gap: 6px;

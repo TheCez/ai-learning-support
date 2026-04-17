@@ -101,9 +101,14 @@ function sendQuestion() {
     return;
   }
 
-  const courseId = document.getElementById('course-select')
-    ? document.getElementById('course-select').value
+  const courseSelect = document.getElementById('course-select');
+  const selectedCourseId = (courseSelect && courseSelect.value)
+    ? String(courseSelect.value)
     : null;
+  const payload = { topic: topic };
+  if (selectedCourseId) {
+    payload.course_id = selectedCourseId;
+  }
 
   // UI: Loading anzeigen
   document.getElementById('response-area').classList.add('hidden');
@@ -113,7 +118,7 @@ function sendQuestion() {
   fetch('/api/ai-professor', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ topic: topic, course_id: courseId ? parseInt(courseId) : null }),
+    body: JSON.stringify(payload),
   })
   .then(r => r.json())
   .then(data => {

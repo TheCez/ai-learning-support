@@ -6,8 +6,14 @@ services:
     container_name: ai-learning-support-frontend
     ports:
       - "5000:5000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - FLASK_APP=app.py
       - FLASK_RUN_HOST=0.0.0.0
       - FLASK_RUN_PORT=5000
+      - RAG_API_BASE_URL=http://host.docker.internal:8000/api/v1
+      - LLM_API_BASE_URL=http://host.docker.internal:8001
     restart: unless-stopped

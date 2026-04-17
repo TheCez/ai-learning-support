@@ -7,7 +7,7 @@
   <h1>Neuen Kurs erstellen</h1>
   <p class="meta">Nach dem Speichern kannst du weitere Module und Quiz-Fragen auf der Kursseite hinzufügen.</p>
 
-  <form method="post">
+  <form method="post" enctype="multipart/form-data">
     <h2>Kursdetails</h2>
     <label>Kursname <span class="required">*</span></label>
     <input type="text" name="title" required placeholder="z. B. Grundpflege für Berufseinsteiger">
@@ -40,6 +40,9 @@
 
     <label>Inhalt / Lerntext</label>
     <textarea name="content_body" rows="6" placeholder="Füge hier den Lerninhalt ein. Bei Quiz-Modulen kannst du die Fragen nach dem Speichern auf der Kursseite hinzufügen."></textarea>
+
+    <label>Kursmaterial hochladen (Optionales PDF)</label>
+    <input type="file" name="course_pdf" accept="application/pdf">
 
     <div class="form-actions">
       <button class="button" type="submit">Kurs speichern</button>

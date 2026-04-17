@@ -1,14 +1,14 @@
 import os
+import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, User, Course, Module, Enrollment, QuizQuestion, QuizAttempt
 from services import (init_db, calculate_language_level, calculate_nursing_level,
                       LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response,
-                      call_gemini_chat, build_ki_lehrer_system_prompt,
-                      generate_slide_from_speech,
+                      call_ki_lehrer_chat, build_ki_lehrer_system_prompt,
                       generate_ai_quiz, evaluate_ai_answers,
                       generate_language_test_questions, generate_nursing_test_questions)
 
@@ -188,15 +188,36 @@ def language_test(user):
 @login_required(role='student')
 def api_language_test_generate(user):
     from flask import jsonify
-    questions = generate_language_test_questions()
-    if not questions:
+    try:
+        questions = generate_language_test_questions()
+        if questions:
+            return jsonify({'questions': questions, 'source': 'llm_api'})
+
         # Fallback to static questions converted to unified format
-        questions = [
+        fallback_questions = [
             {'type': 'multiple_choice', 'question': q['question'],
              'options': q['choices'], 'answer': q['answer']}
             for q in LANGUAGE_TEST
         ]
-    return jsonify({'questions': questions})
+        return jsonify({
+            'questions': fallback_questions,
+            'source': 'static_fallback',
+            'warning': 'LLM API returned no questions. Using fallback set.',
+        })
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            'error': 'language_test_generation_failed',
+            'message': 'Sprachtest-Fragen konnten vom LLM-Backend nicht geladen werden.',
+            'details': str(e),
+            'questions': [],
+        }), 502
+    except Exception as e:
+        return jsonify({
+            'error': 'language_test_unexpected_error',
+            'message': 'Unerwarteter Fehler bei der Generierung des Sprachtests.',
+            'details': str(e),
+            'questions': [],
+        }), 500
 
 
 @app.route('/api/language-test/submit', methods=['POST'])
@@ -402,6 +423,7 @@ def create_course(user):
         module_description = request.form['module_description'].strip()
         module_type = request.form['module_type']
         content_body = request.form.get('content_body', '').strip()
+        uploaded_pdf = request.files.get('course_pdf')
 
         course = Course(title=title, summary=summary, recommended_level=level, owner_id=user.id)
         db.session.add(course)
@@ -416,8 +438,34 @@ def create_course(user):
         )
         db.session.add(module)
         db.session.commit()
-        flash(f'Kurs "{title}" und erstes Modul gespeichert.', 'success')
-        return redirect(url_for('teacher_course', course_id=course.id))
+
+        # Optional: forward uploaded PDF to RAG backend using the newly created course id
+        doc_id = None
+        if uploaded_pdf and uploaded_pdf.filename:
+            if not uploaded_pdf.filename.lower().endswith('.pdf'):
+                flash('Kurs gespeichert, aber die Datei war kein PDF und wurde nicht hochgeladen.', 'warning')
+            else:
+                try:
+                    rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
+                    upload_url = f"{rag_base}/courses/{course.id}/documents"
+                    files = {'file': (uploaded_pdf.filename, uploaded_pdf.stream, 'application/pdf')}
+                    data = {'week': 1}
+                    upload_resp = requests.post(upload_url, files=files, data=data, timeout=30)
+                    upload_resp.raise_for_status()
+                    upload_data = upload_resp.json() if upload_resp.content else {}
+                    doc_id = (upload_data.get('metadata') or {}).get('doc_id')
+                    if doc_id:
+                        flash('Kurs gespeichert. PDF wurde hochgeladen und wird nun indexiert.', 'success')
+                    else:
+                        flash('Kurs gespeichert. PDF wurde hochgeladen, aber ohne doc_id-Antwort.', 'warning')
+                except requests.exceptions.RequestException as e:
+                    flash(f'Kurs gespeichert, aber PDF-Upload zur RAG-API fehlgeschlagen: {e}', 'warning')
+
+        if not doc_id:
+            flash(f'Kurs "{title}" und erstes Modul gespeichert.', 'success')
+
+        return redirect(url_for('teacher_course', course_id=course.id, doc_id=doc_id) if doc_id
+                        else url_for('teacher_course', course_id=course.id))
     return render_template('upload_course.html')
 
 
@@ -551,6 +599,86 @@ def student_progress(user):
     return render_template('student_progress.html', details=details)
 
 
+# ── RAG Upload & Polling ───────────────────────
+@app.route('/api/upload', methods=['POST'])
+@login_required(role='teacher')
+def api_upload_document(user):
+    """Upload PDF to RAG API for ingestion and indexing."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Keine Datei hochgeladen'}), 400
+    
+    file = request.files['file']
+    course_id = request.form.get('course_id', type=int)
+    week = request.form.get('week', type=int, default=1)
+    
+    if not file or file.filename == '':
+        return jsonify({'error': 'Datei ungültig'}), 400
+    
+    if not file.filename.lower().endswith('.pdf'):
+        return jsonify({'error': 'Nur PDF-Dateien erlaubt'}), 400
+    
+    if not course_id:
+        return jsonify({'error': 'course_id erforderlich'}), 400
+    
+    # Verify user owns the course
+    course = Course.query.get(course_id)
+    if not course or course.owner_id != user.id:
+        return jsonify({'error': 'Zugriff verweigert'}), 403
+    
+    try:
+        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
+        upload_url = f"{rag_base}/courses/{course_id}/documents"
+        
+        # Prepare multipart form data
+        files = {'file': (file.filename, file.stream, 'application/pdf')}
+        data = {'week': week}
+        
+        # POST to RAG API
+        response = requests.post(upload_url, files=files, data=data, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        doc_id = result.get('metadata', {}).get('doc_id', '')
+        
+        return jsonify({
+            'success': True,
+            'doc_id': doc_id,
+            'message': f'Datei "{file.filename}" erfolgreich hochgeladen'
+        }), 200
+    
+    except requests.exceptions.Timeout:
+        return jsonify({'error': 'Timeout beim Upload. Versuche es später.'}), 504
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Upload fehlgeschlagen: {str(e)}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'Fehler: {str(e)}'}), 500
+
+
+@app.route('/api/upload/ready/<int:course_id>/<doc_id>', methods=['GET'])
+@login_required(role='teacher')
+def api_check_upload_ready(user, course_id, doc_id):
+    """Poll the RAG API to check if document is ready for use."""
+    # Verify user owns the course
+    course = Course.query.get(course_id)
+    if not course or course.owner_id != user.id:
+        return jsonify({'error': 'Zugriff verweigert'}), 403
+    
+    try:
+        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
+        ready_url = f"{rag_base}/courses/{course_id}/documents/{doc_id}/ready"
+        
+        response = requests.get(ready_url, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        return jsonify(result), 200
+    
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Abfrage fehlgeschlagen: {str(e)}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'Fehler: {str(e)}'}), 500
+
+
 # ── KI-Professorin ─────────────────────────────
 @app.route('/ai-professor', methods=['GET'])
 @login_required(role='student')
@@ -574,18 +702,20 @@ def ai_professor_api(user):
     if not topic:
         return jsonify({'error': 'Kein Thema angegeben.'}), 400
 
-    course_context = ''
-    if selected_course_id:
-        course = Course.query.get(selected_course_id)
-        if course and any(e.course_id == selected_course_id for e in user.enrollments):
-            parts = [f"Kurs: {course.title}\n{course.summary}"]
-            for module in course.modules:
-                parts.append(f"Modul: {module.title}\n{module.description}")
-                if module.content:
-                    parts.append(module.content)
-            course_context = '\n\n'.join(parts)
+    validated_course_id = None
+    if selected_course_id not in (None, ''):
+        try:
+            selected_course_id_int = int(selected_course_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Ungültige course_id.'}), 400
 
-    response_text = get_ai_professor_response(topic, user.language_level, course_context)
+        # Only allow courses the student is enrolled in.
+        if not any(e.course_id == selected_course_id_int for e in user.enrollments):
+            return jsonify({'error': 'Kurs-Kontext nicht erlaubt.'}), 403
+
+        validated_course_id = str(selected_course_id_int)
+
+    response_text = get_ai_professor_response(topic, user.language_level, validated_course_id)
     return jsonify({'response': response_text})
 
 
@@ -613,64 +743,38 @@ def ki_lehrer(user):
 @app.route('/api/ki-lehrer', methods=['POST'])
 @login_required(role='student')
 def ki_lehrer_api(user):
-    from flask import jsonify
     data = request.get_json(silent=True) or {}
-    module_id   = data.get('module_id')
+    module_id = data.get('module_id')
+    requested_course_id = data.get('course_id')
     conversation = data.get('conversation', [])   # [{role:'user'|'model', text:'...'}]
     is_greeting  = data.get('greeting', False)
 
-    module_title = module_content = course_title = ''
-    if module_id:
-        module = Module.query.get(module_id)
-        if module:
-            module_title   = module.title
-            module_content = module.content or module.description or ''
-            course_title   = module.course.title if module.course else ''
+    # Resolve course_id pipeline: frontend-provided course_id, else derive from module, else 'all'.
+    resolved_course_id = None
+    if requested_course_id not in (None, '', 'null', 'undefined'):
+        resolved_course_id = str(requested_course_id)
+    elif module_id not in (None, ''):
+        try:
+            module = Module.query.get(int(module_id))
+            if module and module.course_id:
+                resolved_course_id = str(module.course_id)
+        except (TypeError, ValueError):
+            pass
 
-    # Today's topic set by the teacher
-    today_module_title = today_course_title = ''
-    enrolled_courses = [e.course for e in user.enrollments]
-    for course in enrolled_courses:
-        if course.current_module_id:
-            today_mod = Module.query.get(course.current_module_id)
-            if today_mod:
-                today_module_title = today_mod.title
-                today_course_title = course.title
-                break
+    if not resolved_course_id:
+        resolved_course_id = 'all'
 
-    system = build_ki_lehrer_system_prompt(
-        user.first_name, user.language_level,
-        module_title, course_title, module_content,
-        today_module_title, today_course_title
+    print(f"DEBUG: KI-Lehrer route resolved course_id: {resolved_course_id}")
+
+    # Call the external LLM API for KI-Lehrer generation
+    result = call_ki_lehrer_chat(
+        course_id=resolved_course_id,
+        conversation=conversation,
+        is_greeting=is_greeting,
+        user_first_name=user.first_name
     )
 
-    # Welcome without module: single short greeting sentence
-    if is_greeting and not module_id and not conversation:
-        welcome_system = (
-            f"Du bist Professor Wagner. Begrüße {user.first_name} mit genau einem einzigen Satz: "
-            f"'Hallo {user.first_name}, hier ist Prof. Wagner – bitte wähle oben ein Modul aus, um zu starten.' "
-            f"Sage exakt diesen Satz, leicht variiert, auf Deutsch. Kein weiterer Text."
-        )
-        response_text = call_gemini_chat(welcome_system, [{'role': 'user', 'text': '__WELCOME__'}])
-        return jsonify({'response': response_text})
-
-    # Begrüßungs-Trigger: leere History → synthetische User-Nachricht
-    if is_greeting and not conversation:
-        contents = [{'role': 'user', 'text': '__GREETING__'}]
-    else:
-        contents = [{'role': c['role'], 'text': c['text']} for c in conversation[-20:]]
-
-    speech = call_gemini_chat(system, contents)
-
-    # Generate slide whenever a module is selected (including greeting responses)
-    slide_title  = ''
-    slide_points = []
-    slide_source = ''
-    if module_id and speech and not speech.startswith('Fehler'):
-        slide_title, slide_points = generate_slide_from_speech(speech, module_title)
-
-    return jsonify({'response': speech, 'slide_title': slide_title,
-                    'slide_points': slide_points, 'slide_source': slide_source})
+    return jsonify(result)
 
 
 @app.route('/api/tts-proxy', methods=['POST'])
@@ -683,39 +787,49 @@ def tts_proxy():
     TalkingHead sends:  { "input": {"ssml": "..."}, "voice": {...}, "audioConfig": {...} }
     We return:          { "audioContent": "<base64 MP3>", "timepoints": [] }
     """
-    import re as _re, base64, json as _j, urllib.request, urllib.error, asyncio, io, tempfile, os as _os
+    import re as _re, base64, json as _j, asyncio, io
 
     data = request.get_json(silent=True) or {}
     inp  = data.get('input') or {}
-    raw  = inp.get('ssml', '') or inp.get('text', '')
+    raw  = inp.get('ssml') or inp.get('text') or ''
     text = _re.sub(r'<[^>]+>', ' ', raw)
     text = _re.sub(r'\s+', ' ', text).strip()
     if not text:
         return _j.dumps({'error': 'no text'}), 400, {'Content-Type': 'application/json'}
 
     # ── 1. Try ElevenLabs if API key present ──────────────────────
-    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
+    api_key = os.getenv('ELEVENLABS_API_KEY', '')
     if api_key:
         voice_id = 'Xb7hH8MSUJpSbSDYk0k2'
-        payload  = _j.dumps({
+        payload = {
             'text':     text,
             'model_id': 'eleven_multilingual_v2',
             'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2},
-        }).encode('utf-8')
-        req = urllib.request.Request(
-            f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
-            data=payload, method='POST'
-        )
-        req.add_header('xi-api-key', api_key)
-        req.add_header('Content-Type', 'application/json')
+        }
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                audio_bytes = r.read()
-            encoded = base64.b64encode(audio_bytes).decode('utf-8')
-            return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
-                   {'Content-Type': 'application/json; charset=utf-8'}
-        except (urllib.error.HTTPError, urllib.error.URLError, Exception):
-            pass  # any ElevenLabs failure → fall through to edge-tts
+            resp = requests.post(
+                f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
+                headers={
+                    'xi-api-key': api_key,
+                    'Content-Type': 'application/json',
+                    'Accept': 'audio/mpeg',
+                },
+                json=payload,
+                timeout=20,
+            )
+            if resp.ok:
+                audio_bytes = resp.content
+                encoded = base64.b64encode(audio_bytes).decode('utf-8')
+                return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
+                       {'Content-Type': 'application/json; charset=utf-8'}
+
+            print(f"DEBUG: ElevenLabs TTS failed status={resp.status_code} body={resp.text}")
+        except requests.exceptions.RequestException as e:
+            print(f"DEBUG: ElevenLabs TTS request failed: {type(e).__name__}: {e}")
+        except Exception as e:
+            print(f"DEBUG: ElevenLabs TTS unexpected error: {type(e).__name__}: {e}")
+        
+        # any ElevenLabs failure → fall through to edge-tts
 
     # ── 2. Fallback: edge-tts (Microsoft neural, free) ────────────
     try:
@@ -748,8 +862,9 @@ def stt_proxy():
     import json as _j, io
 
     audio_data = request.get_data()
+    # Gracefully handle empty audio without crashing
     if not audio_data:
-        return _j.dumps({'error': 'no audio'}), 400, {'Content-Type': 'application/json'}
+        return _j.dumps({'error': 'no_audio', 'text': ''}), 200, {'Content-Type': 'application/json'}
 
     content_type = request.content_type or 'audio/webm'
     ext = 'webm' if 'webm' in content_type else 'mp3' if 'mp3' in content_type else 'webm'
@@ -821,4 +936,8 @@ def debug_env():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(
+        host=os.environ.get('FLASK_RUN_HOST', '0.0.0.0'),
+        port=int(os.environ.get('FLASK_RUN_PORT', '5000')),
+        debug=os.environ.get('FLASK_DEBUG', 'true').lower() == 'true',
+    )

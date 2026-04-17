@@ -1,14 +1,16 @@
 import os
 import json as _json
+import requests
 from models import db, User, Course, Module
 
 genai = None
 genai_types = None
 
+
 def _load_gemini():
-    """Importiert google-genai lazy – funktioniert auch nach nachträglicher Installation."""
+    """Lazily load google-genai so only onboarding test depends on it."""
     global genai, genai_types
-    if genai is not None:
+    if genai is not None and genai_types is not None:
         return True
     try:
         from google import genai as _genai
@@ -16,8 +18,19 @@ def _load_gemini():
         genai = _genai
         genai_types = _types
         return True
-    except ImportError:
+    except Exception:
         return False
+
+
+def _strip_md_code(text: str) -> str:
+    """Strip markdown code fences from model output before JSON parsing."""
+    text = (text or '').strip()
+    if text.startswith('```'):
+        lines = text.split('\n')
+        text = '\n'.join(lines[1:])
+        if text.rstrip().endswith('```'):
+            text = text.rstrip()[:-3]
+    return text.strip()
 
 LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1']
 
@@ -244,96 +257,127 @@ def calculate_nursing_level(score: int) -> str:
     return 'advanced'
 
 
-def get_ai_professor_response(topic: str, student_level: str, course_context: str = '') -> str:
-    """Antwortet mit Google Gemini, mit optionalem Kursinhalts-Kontext."""
+def get_ai_professor_response(topic: str, student_level: str, selected_course_id: str | None = None) -> str:
+    """Calls external LLM API for single-turn QA chat (AI-Professor)."""
     if not topic:
         topic = 'Pflegewissen allgemein'
 
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
-        level_tips = {
-            'A1': 'Ich werde sehr einfache, kurze Sätze verwenden.',
-            'A2': 'Ich erkläre mit bekannten Alltagswörtern.',
-            'B1': 'Ich verwende klares Standarddeutsch.',
-            'B2': 'Ich erkläre auf normalem Pflegedeutsch.',
-            'C1': 'Ich verwende Fachterminologie der Pflege.',
-        }
-        tip = level_tips.get(student_level, 'Ich passe meine Sprache an dein Niveau an.')
-        return (
-            f"Professor KI – Demo-Modus (kein API-Key konfiguriert)\n\n"
-            f"Thema: {topic} | Dein Niveau: {student_level}\n"
-            f"{tip}\n\n"
-            f"Um die echte KI-Professorin zu nutzen, setze GOOGLE_API_KEY in der .env-Datei."
-        )
-
-    if not _load_gemini():
-        return (
-            "Professor KI: Das Paket google-genai ist nicht installiert.\n"
-            "Bitte führe aus: pip install google-genai"
-        )
-
     try:
-        level_desc = {
-            'A1': 'sehr einfaches Deutsch, kurze Sätze, Grundvokabular – erkläre jeden Fachbegriff sofort',
-            'A2': 'einfaches Deutsch mit bekannten Alltagsausdrücken',
-            'B1': 'klares Standarddeutsch, gängige Fachbegriffe mit kurzer Erklärung',
-            'B2': 'normales Pflegedeutsch, Fachterminologie darf verwendet werden',
-            'C1': 'gehobenes Pflegefachdeutsch mit vollständiger Terminologie',
-        }.get(student_level, 'verständliches Deutsch')
-
-        course_section = ''
-        if course_context:
-            course_section = (
-                f"\n\n## Kursinhalte des Schülers\n"
-                f"Nutze folgende Kursinhalte als Grundlage deiner Erklärung, "
-                f"damit du direkt auf das beziehst, was der Schüler gerade lernt:\n\n"
-                f"{course_context}\n"
-            )
-
-        system_instruction = (
-            f"Du bist Professor KI, ein einfühlsamer und geduldiger Pflegepädagoge. "
-            f"Du sprichst auf Sprachniveau {student_level} ({level_desc}). "
-            f"Beobachte aktiv den Lernstand: Erkenne Wissenslücken und sprich sie behutsam an. "
-            f"Verknüpfe Theorie immer mit konkreten Pflegesituationen aus dem Alltag. "
-            f"Halte deine Antwort kompakt (4–6 Sätze). "
-            f"Beende mit einer kurzen Reflexionsfrage, die zum Nachdenken anregt."
-            f"{course_section}"
-        )
-
-        client = genai.Client(api_key=api_key)
-        config = genai_types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=600,
-            temperature=0.7,
-        )
-        contents = f"Erkläre mir bitte: {topic}"
-
-        # Versuche Modelle in Reihenfolge (Fallback bei Kontingent-Limit)
-        for model in ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'):
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=config,
-                )
-                return response.text
-            except Exception as model_err:
-                err_str = str(model_err)
-                # Bei Kontingent-Limit oder vorübergehender Überlastung nächstes Modell versuchen
-                if any(code in err_str for code in ('429', '503', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE')):
-                    continue
-                # Anderer Fehler – sofort abbrechen
-                raise model_err
-
-        return (
-            "Professor KI: Alle Modelle haben aktuell ihr Kontingent erreicht. "
-            "Bitte versuche es in einer Minute erneut."
-        )
+        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
+        generate_answer_url = f"{llm_base}/generate_answer"
+        
+        payload = {'query': topic}
+        if selected_course_id:
+            payload['course_id'] = str(selected_course_id)
+        
+        response = requests.post(generate_answer_url, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        answer_text = result.get('answer', '')
+        images = result.get('images', [])
+        
+        # If there are images, append them as linked text to the answer
+        if images:
+            answer_text += '\n\n[Bilder verfügbar in der Ui]'
+        
+        return answer_text if answer_text else 'Keine Antwort erhalten.'
+    
+    except requests.exceptions.Timeout:
+        return 'Professor KI: Timeout bei der Anfrage. Bitte versuche es später.'
+    except requests.exceptions.RequestException as e:
+        return f'Professor KI: Verbindungsfehler zur KI-Dienste. ({str(e)})'
     except Exception as e:
-        return (
-            f"Professor KI: Leider ist ein Fehler aufgetreten ({type(e).__name__}: {e}). "
-            f"Bitte überprüfe den GOOGLE_API_KEY und die Internetverbindung."
-        )
+        return f'Professor KI: Fehler beim Abruf ({type(e).__name__}: {str(e)})'
+
+
+def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = False, user_first_name: str = '') -> dict:
+    """Calls external LLM API for multi-turn KI-Lehrer presentation mode."""
+    try:
+        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
+        generate_presentation_url = f"{llm_base}/generate_presentation"
+        
+        # Extract the latest user query from conversation
+        query = ''
+        if conversation:
+            # Find the last user message
+            for msg in reversed(conversation):
+                if msg.get('role') == 'user':
+                    query = msg.get('text', '')
+                    break
+        
+        if not query and not is_greeting:
+            query = 'Erkläre mir dieses Modul'
+
+        course_id_str = str(course_id) if course_id not in (None, '') else 'all'
+        print(f"DEBUG: Forwarding to LLM API with course_id: {course_id_str}")
+        
+        payload = {
+            'course_id': course_id_str,
+            'query': query,
+            'persona': 'ki_professor',
+        }
+        
+        response = requests.post(generate_presentation_url, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Extract spoken text (all slides concatenated)
+        spoken_text = result.get('spoken_text', '')
+        
+        # Handle both single slide and array of slides from backend
+        slides_data = result.get('slides', [])
+        if not slides_data:
+            # Fallback to single slide format
+            single_slide = result.get('slide', {})
+            if single_slide:
+                slides_data = [single_slide]
+        
+        # Format slides for frontend
+        formatted_slides = []
+        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000')
+        
+        for slide in slides_data:
+            # Process images for this slide
+            slide_images = slide.get('images', []) or slide.get('image_url', [])
+            if isinstance(slide_images, str):
+                slide_images = [slide_images]
+            
+            formatted_images = []
+            for img_url in slide_images:
+                if img_url and not img_url.startswith('http'):
+                    # Prepend RAG API base if relative
+                    img_url = f"{rag_base}{img_url}"
+                formatted_images.append(img_url)
+            
+            formatted_slides.append({
+                'title': slide.get('title', ''),
+                'bullets': slide.get('bullets', []) or slide.get('points', []),
+                'source': slide.get('source', ''),
+                'images': formatted_images,
+            })
+        
+        return {
+            'response': spoken_text,
+            'slides': formatted_slides,
+        }
+    
+    except requests.exceptions.Timeout:
+        return {
+            'response': 'Prof. Wagner: Die Verbindung ist zu langsam. Bitte versuche es später.',
+            'slides': [],
+        }
+    except requests.exceptions.RequestException as e:
+        return {
+            'response': f'Prof. Wagner: Verbindungsfehler ({str(e)}). Bitte überprüfe die Verbindung.',
+            'slides': [],
+        }
+    except Exception as e:
+        return {
+            'response': f'Prof. Wagner: Fehler beim Abruf ({type(e).__name__}). Bitte versuche es später.',
+            'slides': [],
+        }
 
 
 _MODELS = ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash')
@@ -341,46 +385,8 @@ _RETRY_CODES = ('429', '503', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE')
 
 
 def call_gemini_chat(system_instruction: str, contents_list: list) -> str:
-    """Multi-Turn-Gemini-Aufruf für den interaktiven KI-Lehrer."""
-    if not _load_gemini():
-        return "google-genai ist nicht installiert. Bitte führe pip install google-genai aus."
-
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
-        return "Kein GOOGLE_API_KEY konfiguriert. Bitte .env-Datei prüfen."
-
-    try:
-        sdk_contents = [
-            genai_types.Content(
-                role=turn['role'],
-                parts=[genai_types.Part(text=turn['text'])]
-            )
-            for turn in contents_list
-        ]
-
-        client = genai.Client(api_key=api_key)
-        config = genai_types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=300,
-            temperature=0.8,
-        )
-
-        for model in _MODELS:
-            try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=sdk_contents,
-                    config=config,
-                )
-                return response.text
-            except Exception as e:
-                if any(c in str(e) for c in _RETRY_CODES):
-                    continue
-                raise
-
-        return "Alle KI-Modelle sind gerade überlastet. Bitte in einer Minute erneut versuchen."
-    except Exception as e:
-        return f"Fehler beim KI-Aufruf: {type(e).__name__}: {e}"
+    """DEPRECATED: Kept for backwards compatibility. Use call_ki_lehrer_chat instead."""
+    return f"Fehler: Gemini SDK wurde entfernt. Nutze instead die externe LLM API."
 
 
 def build_ki_lehrer_system_prompt(first_name: str, language_level: str,
@@ -450,107 +456,55 @@ Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title})
 - Immer auf Deutsch antworten{module_section}{today_section}"""
 
 
-def _strip_md_code(text: str) -> str:
-    """Strip markdown code fences from AI response."""
-    text = text.strip()
-    if text.startswith('```'):
-        lines = text.split('\n')
-        text = '\n'.join(lines[1:])
-        if text.rstrip().endswith('```'):
-            text = text.rstrip()[:-3]
-    return text.strip()
-
-
 def generate_slide_from_speech(speech: str, module_title: str) -> tuple:
-    """Generate a specific slide title + 3 bullet points from the professor's speech."""
-    if not speech or not _load_gemini():
-        return '', []
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
-        return '', []
-
-    snippet = speech[:900]
-    context = f'Modul: {module_title}\n' if module_title else ''
-    prompt = (
-        f'Erstelle EINE einzige kompakte Lernfolie fuer diese Erklaerung:\n'
-        f'{context}"{snippet}"\n\n'
-        'Regeln:\n'
-        '- Genau 3 Stichpunkte, nur die WICHTIGSTEN Fakten\n'
-        '- Jeder Stichpunkt max. 10 Woerter\n'
-        '- Format: "Fachbegriff: kurze Erklaerung"\n'
-        '- Wikipedia-tauglicher Titel fuer die Bildsuche (1-3 Woerter, deutsch)\n\n'
-        'Antworte NUR mit validem JSON (kein Markdown, kein anderer Text):\n'
-        '{"titel":"(1-3 Woerter, fuer Wikipedia-Suche geeignet)",'
-        '"punkte":["Begriff: Erklaerung","Begriff: Erklaerung","Begriff: Erklaerung"]}'
-    )
-
-    client = genai.Client(api_key=api_key)
-    cfg = genai_types.GenerateContentConfig(max_output_tokens=220, temperature=0.25)
-    for model in _MODELS:
-        try:
-            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-            data = _json.loads(_strip_md_code(resp.text))
-            titel = data.get('titel', '') or ''
-            punkte = data.get('punkte', []) or []
-            if titel or punkte:
-                return titel, punkte[:3]
-        except Exception as e:
-            if any(c in str(e) for c in _RETRY_CODES):
-                continue
-            break
+    """DEPRECATED: Slide generation is now handled by the external LLM API.
+    
+    This function is kept for backwards compatibility but returns empty.
+    Slides are generated as part of the /generate_presentation response.
+    """
     return '', []
 
 
 def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
-    """Generate AI quiz questions for a module, adapted to student level."""
-    if not _load_gemini():
+    """Generate AI quiz questions by calling external LLM API."""
+    if not module:
         return []
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
+    
+    try:
+        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
+        generate_quiz_url = f"{llm_base}/generate_quiz"
+        
+        payload = {
+            'course_id': str(module.course_id) if module.course_id else '',
+        }
+        
+        response = requests.post(generate_quiz_url, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        quiz_data = result.get('quiz', [])
+        
+        # Map external API format to internal format
+        questions = []
+        for i, q in enumerate(quiz_data[:num_questions]):
+            mapped_q = {
+                'id': i,
+                'type': 'multiple_choice',  # or could be 'free_text'
+                'question': q.get('question', ''),
+                'options': q.get('options', []),
+                'answer': q.get('answer_index', 0),  # Index or text?
+                'explanation': q.get('explanation', ''),
+            }
+            questions.append(mapped_q)
+        
+        return questions
+    
+    except requests.exceptions.Timeout:
         return []
-
-    content = (module.content or module.description or '')[:2500]
-    level_hint = {
-        'A1': 'sehr einfaches Deutsch, kurze Sätze',
-        'A2': 'einfaches Deutsch, Alltagsvokabular',
-        'B1': 'klares Standarddeutsch',
-        'B2': 'normales Pflegedeutsch',
-        'C1': 'gehobenes Pflegefachdeutsch',
-    }.get(language_level, 'klares Deutsch')
-
-    num_ft = max(1, num_questions - 2)
-    num_mc = num_questions - num_ft
-
-    prompt = (
-        f'Erstelle genau {num_questions} Quizfragen auf Deutsch über "{module.title}".\n'
-        f'Grundlage:\n{content}\n\n'
-        f'Sprachniveau: {language_level} ({level_hint})\n'
-        f'Genau {num_ft} Freitext-Fragen und {num_mc} Multiple-Choice-Fragen.\n\n'
-        f'Antworte NUR mit validem JSON (kein Markdown, keine Erklärung):\n'
-        f'{{"questions":['
-        f'{{"type":"free_text","question":"...","model_answer":"..."}},'
-        f'{{"type":"multiple_choice","question":"...","options":["A","B","C","D"],"answer":"A"}}'
-        f']}}'
-    )
-
-    client = genai.Client(api_key=api_key)
-    cfg = genai_types.GenerateContentConfig(max_output_tokens=900, temperature=0.4)
-
-    for model in _MODELS:
-        try:
-            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-            data = _json.loads(_strip_md_code(resp.text))
-            questions = data.get('questions', [])
-            valid = [q for q in questions if 'question' in q and 'type' in q]
-            if valid:
-                for i, q in enumerate(valid):
-                    q['id'] = i
-                return valid[:num_questions]
-        except Exception as e:
-            if any(c in str(e) for c in _RETRY_CODES):
-                continue
-            break
-    return []
+    except requests.exceptions.RequestException:
+        return []
+    except Exception:
+        return []
 
 
 def evaluate_ai_answers(questions: list, student_answers: dict, language_level: str) -> list:
@@ -631,15 +585,20 @@ def evaluate_ai_answers(questions: list, student_answers: dict, language_level: 
 
 
 def generate_language_test_questions() -> list:
-    """AI-generated German language test for nursing context. Falls back to static on error."""
+    """AI-generated German language test (A1-C1) for onboarding.
+
+    This is intentionally kept local via Gemini as a temporary MVP shortcut.
+    Returns [] on any failure so the route can use static fallback questions.
+    """
     if not _load_gemini():
         return []
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
+
+    api_key = os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
     if not api_key:
         return []
 
     prompt = (
-        'Erstelle 10 allgemeine Deutsch-Testfragen (GER A1–C1, je 2 Fragen pro Niveau).\n'
+        'Erstelle 10 allgemeine Deutsch-Testfragen (GER A1-C1, je 2 Fragen pro Niveau).\n'
         'Themen: Grammatik (Kasus, Zeitformen, Konjunktionen), Wortschatz (Alltag, Schule, Arbeit), '
         'Schreibstil (formell vs. informell), Redewendungen. KEIN Pflegekontext.\n'
         'Mix: 6 Freitext-Fragen + 4 Multiple-Choice.\n'
@@ -649,18 +608,24 @@ def generate_language_test_questions() -> list:
         '{"type":"multiple_choice","level":"B1","question":"...","options":["A","B","C","D"],"answer":"A"}'
         ']}'
     )
-    client = genai.Client(api_key=api_key)
-    cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
-    for model in _MODELS:
-        try:
-            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-            questions = _json.loads(_strip_md_code(resp.text)).get('questions', [])
-            if len(questions) >= 8:
-                return questions[:10]
-        except Exception as e:
-            if any(c in str(e) for c in _RETRY_CODES):
-                continue
-            break
+
+    try:
+        client = genai.Client(api_key=api_key)
+        cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
+        for model in _MODELS:
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+                parsed = _json.loads(_strip_md_code(resp.text))
+                questions = parsed.get('questions', [])
+                if len(questions) >= 8:
+                    return questions[:10]
+            except Exception as e:
+                if any(c in str(e) for c in _RETRY_CODES):
+                    continue
+                break
+    except Exception:
+        return []
+
     return []
 
 

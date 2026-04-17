@@ -36,6 +36,25 @@
   </section>
 </div>
 
+<section class="card" id="pdf-upload-card" data-course-id="{{ course.id }}">
+  <h2>Kursmaterial hochladen (PDF)</h2>
+  <p class="meta" style="margin-top:-6px; margin-bottom:12px;">
+    Lade ein PDF hoch, damit es im RAG-System indexiert und fuer KI-Antworten verwendet wird.
+  </p>
+
+  <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+    <input
+      type="file"
+      accept="application/pdf"
+      id="pdf-upload-input"
+      style="max-width:340px;"
+    >
+    <button class="button" type="button" id="pdf-upload-btn">Hochladen</button>
+  </div>
+
+  <p id="pdf-upload-status" class="meta" style="margin-top:12px;"></p>
+</section>
+
 {% for module in course.modules %}
 <section class="card{% if course.current_module_id == module.id %} card-today{% endif %}">
   <div class="card-header-row">
@@ -127,5 +146,145 @@
   <p class="empty-hint">Dieser Kurs hat noch keine Module. Füge oben das erste Modul hinzu.</p>
 </div>
 {% endfor %}
+
+<script>
+(function () {
+  const card = document.getElementById('pdf-upload-card');
+  if (!card) return;
+
+  const courseId = card.dataset.courseId;
+  const input = document.getElementById('pdf-upload-input');
+  const button = document.getElementById('pdf-upload-btn');
+  const status = document.getElementById('pdf-upload-status');
+
+  let pollIntervalId = null;
+  let pollAttempts = 0;
+  let pollInFlight = false;
+  const maxPollAttempts = 120; // ~6 minutes at 3s interval
+
+  function setBusy(isBusy, text) {
+    button.disabled = isBusy;
+    if (isBusy) {
+      button.textContent = 'Dokument wird verarbeitet...';
+    } else {
+      button.textContent = 'Hochladen';
+    }
+    status.textContent = text || '';
+  }
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = 'meta';
+    if (kind === 'ok') status.className = 'flash flash-success';
+    if (kind === 'err') status.className = 'flash flash-danger';
+    if (kind === 'info') status.className = 'flash flash-info';
+  }
+
+  function stopPolling() {
+    if (pollIntervalId) {
+      clearInterval(pollIntervalId);
+      pollIntervalId = null;
+    }
+    pollAttempts = 0;
+    pollInFlight = false;
+  }
+
+  async function startPolling(docId) {
+    stopPolling();
+    setStatus('Dokument wird verarbeitet und indexiert...', 'info');
+
+    pollIntervalId = setInterval(async function () {
+      if (pollInFlight) return;
+      pollInFlight = true;
+      pollAttempts += 1;
+
+      try {
+        const readyResp = await fetch(`/api/upload/ready/${courseId}/${encodeURIComponent(docId)}`);
+        const readyData = await readyResp.json();
+
+        if (!readyResp.ok) {
+          throw new Error(readyData.error || 'Readiness-Check fehlgeschlagen.');
+        }
+
+        if (readyData.ready === true) {
+          stopPolling();
+          setBusy(false, '');
+          setStatus(`Dokument indiziert! (${readyData.indexed_chunks || 0} Chunks)`, 'ok');
+          input.value = '';
+          return;
+        }
+
+        setStatus(
+          `Dokument wird verarbeitet... (${readyData.indexed_chunks || 0} Chunks indexiert)`,
+          'info'
+        );
+
+        if (pollAttempts >= maxPollAttempts) {
+          stopPolling();
+          setBusy(false, '');
+          setStatus('Zeitueberschreitung beim Indexieren. Bitte spaeter erneut pruefen.', 'err');
+        }
+      } catch (err) {
+        stopPolling();
+        setBusy(false, '');
+        setStatus(`Fehler beim Status-Check: ${err.message}`, 'err');
+      } finally {
+        pollInFlight = false;
+      }
+    }, 3000);
+  }
+
+  // Auto-poll when redirected from course creation with ?doc_id=...
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialDocId = urlParams.get('doc_id');
+  if (initialDocId) {
+    setBusy(true, 'Dokument wird verarbeitet...');
+    startPolling(initialDocId);
+  }
+
+  button.addEventListener('click', async function () {
+    const file = input.files && input.files[0];
+    if (!file) {
+      setStatus('Bitte zuerst eine PDF-Datei auswaehlen.', 'err');
+      return;
+    }
+
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setStatus('Nur PDF-Dateien sind erlaubt.', 'err');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('course_id', courseId);
+    formData.append('week', '1');
+
+    setBusy(true, 'Datei wird hochgeladen...');
+    setStatus('Datei wird hochgeladen...', 'info');
+
+    try {
+      const resp = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(data.error || 'Upload fehlgeschlagen.');
+      }
+
+      if (!data.doc_id) {
+        throw new Error('Kein doc_id vom Backend erhalten.');
+      }
+
+      await startPolling(data.doc_id);
+    } catch (err) {
+      stopPolling();
+      setBusy(false, '');
+      setStatus(`Upload-Fehler: ${err.message}`, 'err');
+    }
+  });
+})();
+</script>
 
 {% endblock %}

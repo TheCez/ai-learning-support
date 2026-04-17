@@ -240,15 +240,16 @@ def calculate_nursing_level(score: int) -> str:
     return 'advanced'
 
 
-def get_ai_professor_response(topic: str, student_level: str, course_context: str = '', student_context: str = '') -> str:
+def get_ai_professor_response(topic: str, student_level: str, course_context: str = '', student_context: str = '', course_id: str | None = None) -> str:
     """Antwort über interne llm_api /generate_answer (kein direkter Gemini-Aufruf)."""
     query = (topic or 'Pflegewissen allgemein').strip()
     if course_context:
         query += f"\n\nKurskontext:\n{course_context}"
+    if student_context:
+        query += f"\n\nSchülerkontext:\n{student_context}"
     payload = {
-        'course_id': 'all',
+        'course_id': str(course_id or 'all'),
         'query': query,
-        'student_context': student_context or '',
         'persona': 'ki_professor',
     }
     result = _safe_post('/generate_answer', payload)
@@ -537,12 +538,13 @@ def build_student_context(user) -> str:
     return '\n'.join(parts)
 
 
-def generate_flashcards(module, language_level: str, num_cards: int = 6) -> list:
+def generate_flashcards(module, language_level: str, student_context: str = '', num_cards: int = 5) -> list:
     """Generate flashcards via llm_api endpoint."""
     payload = {
-        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
-        'num_cards': int(num_cards or 6),
+        'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all',
+        'num_cards': int(num_cards or 5),
         'level': language_level or 'simple',
+        'student_context': student_context or '',
     }
     result = _safe_post('/generate_flashcards', payload)
     cards = result.get('flashcards', []) if isinstance(result, dict) else []
@@ -552,7 +554,7 @@ def generate_flashcards(module, language_level: str, num_cards: int = 6) -> list
 def generate_library_summary(module, language_level: str, student_context: str = '') -> str:
     """Generate library summary via llm_api endpoint."""
     payload = {
-        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
+        'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all',
         'level': language_level or 'simple',
         'student_context': student_context or '',
     }
@@ -563,7 +565,7 @@ def generate_library_summary(module, language_level: str, student_context: str =
 def generate_library_cards(module, language_level: str, student_context: str = '') -> list:
     """Generate structured library cards via llm_api endpoint."""
     payload = {
-        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
+        'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all',
         'level': language_level or 'simple',
         'student_context': student_context or '',
     }

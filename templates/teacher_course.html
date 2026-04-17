@@ -270,14 +270,15 @@
       const data = await resp.json();
 
       if (!resp.ok) {
-        throw new Error(data.error || 'Upload fehlgeschlagen.');
+        throw new Error(data.error || data.message || 'Upload fehlgeschlagen.');
       }
 
-      if (!data.doc_id) {
-        throw new Error('Kein doc_id vom Backend erhalten.');
+      const docId = data.doc_id || data.document_id || data.id || data.docId;
+      if (!docId) {
+        throw new Error(data.error || 'Kein doc_id vom Backend erhalten.');
       }
 
-      await startPolling(data.doc_id);
+      await startPolling(docId);
     } catch (err) {
       stopPolling();
       setBusy(false, '');

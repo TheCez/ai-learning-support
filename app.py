@@ -1,4 +1,5 @@
 import os
+import requests
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -460,7 +461,43 @@ def create_course(user):
         db.session.add(module)
         db.session.commit()
         flash(f'Kurs "{title}" und erstes Modul gespeichert.', 'success')
-        return redirect(url_for('teacher_course', course_id=course.id))
+        
+        # Handle optional PDF upload to RAG API
+        redirect_url = url_for('teacher_course', course_id=course.id)
+        pdf_file = request.files.get('course_pdf')
+        if pdf_file and pdf_file.filename and pdf_file.filename.lower().endswith('.pdf'):
+            try:
+                rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1').rstrip('/')
+                upload_url = f"{rag_base}/courses/{course.id}/documents"
+                files = {
+                    'file': (pdf_file.filename, pdf_file.stream, pdf_file.mimetype or 'application/pdf'),
+                }
+                resp = requests.post(upload_url, files=files, data={'week': '1'}, timeout=60)
+                resp.raise_for_status()
+                payload = resp.json() if resp.content else {}
+
+                # Extract doc_id from response (try multiple keys including nested metadata)
+                metadata = payload.get('metadata', {})
+                if isinstance(metadata, dict):
+                    nested_doc_id = metadata.get('doc_id') or metadata.get('document_id') or metadata.get('id')
+                else:
+                    nested_doc_id = None
+
+                doc_id = (
+                    payload.get('doc_id')
+                    or payload.get('document_id')
+                    or payload.get('id')
+                    or payload.get('docId')
+                    or nested_doc_id
+                )
+
+                if doc_id:
+                    redirect_url = url_for('teacher_course', course_id=course.id, doc_id=str(doc_id))
+                    flash(f'PDF wird hochgeladen und indexiert...', 'info')
+            except Exception as e:
+                flash(f'PDF-Upload fehlgeschlagen: {str(e)}', 'warning')
+
+        return redirect(redirect_url)
     return render_template('upload_course.html')
 
 
@@ -473,6 +510,100 @@ def teacher_course(user, course_id):
         return redirect(url_for('teacher_dashboard'))
     enrollments = Enrollment.query.filter_by(course_id=course_id).all()
     return render_template('teacher_course.html', course=course, enrollments=enrollments)
+
+
+@app.route('/api/upload', methods=['POST'])
+@login_required(role='teacher')
+def api_upload_document(user):
+    """Forward a PDF upload to the external RAG API."""
+    from flask import jsonify
+
+    course_id = request.form.get('course_id', type=int)
+    week = request.form.get('week', default='1')
+    file_obj = request.files.get('file')
+
+    if not course_id:
+        return jsonify({'error': 'Fehlende course_id.'}), 400
+    if not file_obj or not file_obj.filename:
+        return jsonify({'error': 'Keine Datei angegeben.'}), 400
+
+    course = Course.query.get_or_404(course_id)
+    if course.owner_id != user.id:
+        return jsonify({'error': 'Zugriff verweigert'}), 403
+
+    rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1').rstrip('/')
+    upload_url = f"{rag_base}/courses/{course_id}/documents"
+
+    files = {
+        'file': (file_obj.filename, file_obj.stream, file_obj.mimetype or 'application/pdf'),
+    }
+    data = {'week': str(week)}
+
+    try:
+        resp = requests.post(upload_url, files=files, data=data, timeout=60)
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Try multiple keys for doc_id (including nested metadata)
+        metadata = payload.get('metadata', {})
+        if isinstance(metadata, dict):
+            nested_doc_id = metadata.get('doc_id') or metadata.get('document_id') or metadata.get('id')
+        else:
+            nested_doc_id = None
+        
+        doc_id = (
+            payload.get('doc_id')
+            or payload.get('document_id')
+            or payload.get('id')
+            or payload.get('docId')
+            or nested_doc_id
+        )
+        message = payload.get('message') or payload.get('detail') or 'Dokument hochgeladen.'
+
+        if not doc_id:
+            return jsonify({
+                'error': 'Kein doc_id vom Backend erhalten.',
+                'message': message,
+                'raw': payload,
+            }), 502
+
+        return jsonify({
+            'doc_id': str(doc_id),
+            'message': message,
+            'raw': payload,
+        }), 200
+    except requests.exceptions.Timeout:
+        return jsonify({'error': 'Timeout beim Upload. Versuche es später.'}), 504
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Upload fehlgeschlagen: {str(e)}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'Fehler: {str(e)}'}), 500
+
+
+@app.route('/api/upload/ready/<int:course_id>/<doc_id>', methods=['GET'])
+@login_required(role='teacher')
+def api_check_upload_ready(user, course_id, doc_id):
+    """Poll the RAG API to check if a document is ready for use."""
+    from flask import jsonify
+
+    course = Course.query.get(course_id)
+    if not course or course.owner_id != user.id:
+        return jsonify({'error': 'Zugriff verweigert'}), 403
+
+    rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1').rstrip('/')
+    ready_url = f"{rag_base}/courses/{course_id}/documents/{doc_id}/ready"
+
+    try:
+        resp = requests.get(ready_url, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json() if resp.content else {}
+        return jsonify(payload), 200
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Abfrage fehlgeschlagen: {str(e)}'}), 502
+    except Exception as e:
+        return jsonify({'error': f'Fehler: {str(e)}'}), 500
 
 
 @app.route('/teacher/course/<int:course_id>/set-current-module', methods=['POST'])
@@ -618,17 +749,32 @@ def ai_professor_api(user):
         return jsonify({'error': 'Kein Thema angegeben.'}), 400
 
     course_context = ''
+    validated_course_id = None
     if selected_course_id:
-        course = Course.query.get(selected_course_id)
-        if course and any(e.course_id == selected_course_id for e in user.enrollments):
+        try:
+            selected_course_id_int = int(selected_course_id)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Ungültige course_id.'}), 400
+
+        course = Course.query.get(selected_course_id_int)
+        if course and any(e.course_id == selected_course_id_int for e in user.enrollments):
             parts = [f"Kurs: {course.title}\n{course.summary}"]
             for module in course.modules:
                 parts.append(f"Modul: {module.title}\n{module.description}")
                 if module.content:
                     parts.append(module.content)
             course_context = '\n\n'.join(parts)
+            validated_course_id = str(selected_course_id_int)
+        else:
+            return jsonify({'error': 'Kurs-Kontext nicht erlaubt.'}), 403
 
-    response_text = get_ai_professor_response(topic, user.language_level, course_context, build_student_context(user))
+    response_text = get_ai_professor_response(
+        topic,
+        user.language_level,
+        course_context,
+        build_student_context(user),
+        validated_course_id,
+    )
     return jsonify({'response': response_text})
 
 
@@ -659,9 +805,10 @@ def ki_lehrer_api(user):
     data = request.get_json(silent=True) or {}
     module_id = data.get('module_id')
     requested_course_id = data.get('course_id')
-    conversation = data.get('conversation', [])
-    is_greeting = data.get('greeting', False)
+    conversation = data.get('conversation', [])   # [{role:'user'|'model', text:'...'}]
+    is_greeting  = data.get('greeting', False)
 
+    # Resolve course_id pipeline: frontend-provided course_id, else derive from module, else 'all'.
     resolved_course_id = None
     if requested_course_id not in (None, '', 'null', 'undefined'):
         resolved_course_id = str(requested_course_id)
@@ -676,11 +823,14 @@ def ki_lehrer_api(user):
     if not resolved_course_id:
         resolved_course_id = 'all'
 
+    print(f"DEBUG: KI-Lehrer route resolved course_id: {resolved_course_id}")
+
+    # Call the external LLM API for KI-Lehrer generation
     result = call_ki_lehrer_chat(
         course_id=resolved_course_id,
         conversation=conversation,
         is_greeting=is_greeting,
-        user_first_name=user.first_name,
+        user_first_name=user.first_name
     )
     return jsonify(result)
 
@@ -829,7 +979,8 @@ def api_flashcards(user, module_id):
     cards = Flashcard.query.filter_by(module_id=module_id).all()
     if not cards:
         # Generate with AI
-        generated = generate_flashcards(module, user.language_level or 'A2')
+        content_level = 'simple' if (user.language_level or 'A2') in ('A1', 'A2') else 'technical'
+        generated = generate_flashcards(module, content_level, build_student_context(user))
         for g in generated:
             fc = Flashcard(module_id=module_id, front=g['front'], back=g['back'])
             db.session.add(fc)
@@ -888,7 +1039,8 @@ def api_flashcard_review(user, card_id):
 def api_library(user, module_id):
     module = Module.query.get_or_404(module_id)
     student_ctx = build_student_context(user)
-    summary = generate_library_summary(module, user.language_level or 'A2', student_ctx)
+    content_level = 'simple' if (user.language_level or 'A2') in ('A1', 'A2') else 'technical'
+    summary = generate_library_summary(module, content_level, student_ctx)
     if not summary:
         summary = module.content or module.description or 'Kein Inhalt verfügbar.'
     return jsonify({
@@ -911,8 +1063,13 @@ def api_library_ask(user):
 
     student_ctx = build_student_context(user)
     context = f"Lesekarten-Inhalt:\n{card_content}\n\n{student_ctx}" if card_content else student_ctx
+    course_id = None
+    if module_id not in (None, ''):
+        module = Module.query.get(module_id)
+        if module and module.course_id:
+            course_id = str(module.course_id)
 
-    response = get_ai_professor_response(question, user.language_level or 'A2', context, student_ctx)
+    response = get_ai_professor_response(question, user.language_level or 'A2', context, student_ctx, course_id)
     return jsonify({'response': response})
 
 
@@ -921,7 +1078,8 @@ def api_library_ask(user):
 def api_library_cards(user, module_id):
     module = Module.query.get_or_404(module_id)
     student_ctx = build_student_context(user)
-    cards = generate_library_cards(module, user.language_level or 'A2', student_ctx)
+    content_level = 'simple' if (user.language_level or 'A2') in ('A1', 'A2') else 'technical'
+    cards = generate_library_cards(module, content_level, student_ctx)
     return jsonify({'cards': cards, 'module_title': module.title})
 
 

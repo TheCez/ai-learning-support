@@ -60,6 +60,7 @@ AI Learning Support UI built with Flask for nursing education. Features include 
   - Only the first image per slide is rendered (no duplicates); console logs each image URL attempted for debugging
   - KI-Lehrer auto-trigger on page load is disabled; backend calls start only after explicit user action (send/mic)
   - Slide layout uses side-by-side flex columns (text with bullets on left, image on right)
+  - **Traceability button (NEW):** Slides now show a small bottom-right "📄 Seite X" button when `source_page` is present, so learners can see which original PDF page grounded the content
   - Responsive: Falls back to column layout (stacked) on screens narrower than 980px
 - **Speech-to-Text (STT) Robustness (IMPROVED):**
   - Frontend guard: Empty audio blobs are detected (`blob.size === 0`) before sending to `/api/stt`, preventing unnecessary requests
@@ -99,6 +100,8 @@ AI Learning Support UI built with Flask for nursing education. Features include 
   - **Async wait hardening (NEW):** `playAudioAndWait()` now strictly resolves on audio completion (`onend`/Promise), preventing slide skip races
   - **Debounced silence sync (NEW):** slide transitions now wait for a 1.5s sustained-silence window from TalkingHead speaking state, so multi-part/chunked TTS must fully finish before advancing
   - **Conditional image rendering (NEW):** slides with a valid `image_url` render a 50/50 text-image layout; slides without an image expand the text column to full width
+  - **Source page grounding (NEW):** if a slide includes `source_page`, the UI renders a bottom-right traceability button that shows the originating PDF page number
+  - **Empty slides fallback (NEW):** if backend returns `slides: []`, frontend now injects a synthetic "Keine Informationen gefunden" slide (with spoken fallback text) so the UI never freezes on a blank slide
 ✅ STT robustness improvements (NEW)
   - Frontend guard against empty audio blobs prevents unnecessary API calls
   - Backend gracefully handles empty audio with HTTP 200 response instead of 400 crash

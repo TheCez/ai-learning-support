@@ -835,14 +835,56 @@ def tts_proxy():
     try:
         import edge_tts
 
-        async def _synth(t):
+        def _split_text_for_tts(t: str, max_len: int = 280):
+            # Keep chunks short so edge-tts is less likely to return empty audio.
+            parts = []
+            current = []
+            current_len = 0
+            for token in t.split():
+                add_len = len(token) + (1 if current else 0)
+                if current_len + add_len > max_len:
+                    parts.append(' '.join(current))
+                    current = [token]
+                    current_len = len(token)
+                else:
+                    current.append(token)
+                    current_len += add_len
+            if current:
+                parts.append(' '.join(current))
+            return [p for p in parts if p.strip()]
+
+        async def _synth_chunk(chunk_text, voice):
             buf = io.BytesIO()
-            async for chunk in edge_tts.Communicate(t, voice='de-DE-KatjaNeural').stream():
-                if chunk['type'] == 'audio':
-                    buf.write(chunk['data'])
+            async for chunk in edge_tts.Communicate(chunk_text, voice=voice).stream():
+                if chunk.get('type') == 'audio':
+                    buf.write(chunk.get('data', b''))
             return buf.getvalue()
 
-        audio_bytes = asyncio.run(_synth(text))
+        async def _synth_with_retries(full_text):
+            voices = ['de-DE-KatjaNeural', 'de-DE-SeraphinaMultilingualNeural', 'de-DE-ConradNeural']
+            chunks = _split_text_for_tts(full_text)
+            if not chunks:
+                return b''
+
+            final_buf = io.BytesIO()
+            for part in chunks:
+                chunk_audio = b''
+                for voice in voices:
+                    try:
+                        chunk_audio = await _synth_chunk(part, voice)
+                    except Exception:
+                        chunk_audio = b''
+                    if chunk_audio:
+                        break
+                if chunk_audio:
+                    final_buf.write(chunk_audio)
+
+            return final_buf.getvalue()
+
+        audio_bytes = asyncio.run(_synth_with_retries(text))
+        if not audio_bytes:
+            raise RuntimeError('No audio was received. Please verify that your parameters are correct.')
+
         encoded = base64.b64encode(audio_bytes).decode('utf-8')
         return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
                {'Content-Type': 'application/json; charset=utf-8'}

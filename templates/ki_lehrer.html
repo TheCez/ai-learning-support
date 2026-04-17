@@ -194,74 +194,42 @@ async function fetchTtsAudioBlob(text) {
 
 function playAudioAndWait(text) {
   return new Promise(async (resolve) => {
-    let resolved = false;
-    let safetyTimer = null;
-    let audioUrl = null;
-
-    const safeResolve = () => {
-      if (resolved) return;
-      resolved = true;
-      if (safetyTimer) clearTimeout(safetyTimer);
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
-      resolve();
-    };
-
     try {
       const phrase = String(text || '').trim();
       if (!phrase) {
-        safeResolve();
+        resolve();
         return;
       }
 
       const avatar = window.klAvatarHead;
       if (!avatar || typeof avatar.speakText !== 'function') {
         await window.klSpeakFallback(phrase);
-        safeResolve();
+        resolve();
         return;
       }
 
-      const audioBlob = await fetchTtsAudioBlob(phrase);
-      audioUrl = URL.createObjectURL(audioBlob);
-
-      const syncAudio = new Audio(audioUrl);
-      syncAudio.preload = 'auto';
-      syncAudio.muted = true;
-      syncAudio.playsInline = true;
-
-      syncAudio.addEventListener('ended', safeResolve, { once: true });
-      syncAudio.addEventListener('error', safeResolve, { once: true });
-      syncAudio.addEventListener('abort', safeResolve, { once: true });
-      syncAudio.addEventListener('loadedmetadata', () => {
-        if (resolved) return;
-        const durationMs = Number.isFinite(syncAudio.duration) && syncAudio.duration > 0
-          ? Math.ceil(syncAudio.duration * 1000)
-          : estimateSpeechFallbackMs(phrase);
-        safetyTimer = setTimeout(() => {
-          console.warn('[KI-Lehrer Presentation] HTML5 audio timeout fallback triggered');
-          safeResolve();
-        }, durationMs + 1500);
-      }, { once: true });
-
-      // Fire avatar speech in parallel; hidden HTML5 audio controls progression.
+      // Let TalkingHead queue/stream speech; completion is gated by silence detector.
       void Promise.resolve(window.klSpeak(phrase)).catch((err) => {
         console.warn('[KI-Lehrer Presentation] Avatar speech rejected:', err);
       });
 
-      try {
-        await syncAudio.play();
-      } catch (playErr) {
-        console.warn('[KI-Lehrer Presentation] HTML5 audio playback failed:', playErr);
-        safeResolve();
-      }
+      await waitForAvatarToFinish();
+      resolve();
     } catch (e) {
       console.error('[KI-Lehrer Presentation] Audio failed:', e);
-      safeResolve();
+      resolve();
     }
   });
 }
 
 function escH(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function showSourcePage(pageNo) {
+  const page = Number(pageNo);
+  if (!Number.isFinite(page) || page <= 0) return;
+  alert(`Diese Informationen stammen von Seite ${page} des Originaldokuments.`);
 }
 
 async function waitForAvatarToFinish() {
@@ -372,6 +340,9 @@ function klRenderSlide(animate) {
 
   const s = klSlides[klSlideIdx] || {};
   const slideEl = document.getElementById('kl-ppt-slide');
+  if (slideEl) {
+    slideEl.style.position = 'relative';
+  }
   if (slideEl && animate) {
     slideEl.classList.remove('kl-slide-in');
     void slideEl.offsetWidth;
@@ -446,6 +417,33 @@ function klRenderSlide(animate) {
   const nextBtn = document.getElementById('kl-next-btn');
   if (prevBtn) prevBtn.disabled = klSlideIdx <= 0;
   if (nextBtn) nextBtn.disabled = klSlideIdx >= klSlides.length - 1;
+
+  // Source page traceability button (bottom-right on slide)
+  if (slideEl) {
+    const oldBtn = slideEl.querySelector('.kl-source-page-btn');
+    if (oldBtn) oldBtn.remove();
+
+    const sourcePage = Number(s.source_page);
+    if (Number.isFinite(sourcePage) && sourcePage > 0) {
+      const sourceBtn = document.createElement('button');
+      sourceBtn.type = 'button';
+      sourceBtn.className = 'kl-source-page-btn absolute bottom-2 right-2 text-xs text-gray-400 hover:text-blue-600 bg-white bg-opacity-75 px-2 py-1 rounded shadow-sm border border-gray-200';
+      sourceBtn.textContent = `📄 Seite ${sourcePage}`;
+      sourceBtn.onclick = () => showSourcePage(sourcePage);
+      sourceBtn.style.position = 'absolute';
+      sourceBtn.style.bottom = '0.5rem';
+      sourceBtn.style.right = '0.5rem';
+      sourceBtn.style.fontSize = '0.75rem';
+      sourceBtn.style.padding = '0.22rem 0.5rem';
+      sourceBtn.style.border = '1px solid #e5e7eb';
+      sourceBtn.style.borderRadius = '0.4rem';
+      sourceBtn.style.background = 'rgba(255,255,255,0.85)';
+      sourceBtn.style.color = '#6b7280';
+      sourceBtn.style.zIndex = '4';
+      sourceBtn.style.cursor = 'pointer';
+      slideEl.appendChild(sourceBtn);
+    }
+  }
 
   const dots = document.getElementById('kl-ppt-dots');
   if (dots) {
@@ -559,9 +557,33 @@ function klSend() {
     klRemoveLoadingBubble();
     console.log('Raw LLM Data:', data);
     const resp = data && (data.spoken_text || data.response) ? (data.spoken_text || data.response) : '';
+    const hasSlidesArray = data && Array.isArray(data.slides);
+    const hasSlides = hasSlidesArray && data.slides.length > 0;
+
+    // Graceful fallback if backend returns slides: []
+    if (!hasSlides) {
+      const fallbackSlide = [{
+        title: 'Keine Informationen gefunden',
+        bullets: [
+          'Das wurde in den hochgeladenen Materialien nicht gefunden.',
+          'Bitte versuche eine andere Frage.'
+        ],
+        image_url: null,
+        spoken_text: 'Es tut mir leid, aber ich konnte in den aktuellen Kursmaterialien keine Informationen dazu finden.',
+        source_page: null
+      }];
+
+      const fallbackText = fallbackSlide[0].spoken_text;
+      klConversation.push({ role: 'model', text: fallbackText });
+      klSetSlides(fallbackSlide);
+
+      klIsLoading = false;
+      klSetInputEnabled(true);
+      return;
+    }
     
     // Handle nested slides schema from backend
-    if (data && Array.isArray(data.slides) && data.slides.length) {
+    if (hasSlides) {
       const fullSlideText = data.slides
         .map(s => String(s.spoken_text || '').trim())
         .filter(Boolean)

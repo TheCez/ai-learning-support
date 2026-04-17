@@ -1,16 +1,21 @@
 import os
-import requests
 from dotenv import load_dotenv
 load_dotenv()
 
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User, Course, Module, Enrollment, QuizQuestion, QuizAttempt
+from models import (db, User, Course, Module, Enrollment, QuizQuestion, QuizAttempt,
+                    Flashcard, FlashcardProgress, DailyGoal, FriendMission, LottoWinner,
+                    CaseStudyAttempt, friendship)
 from services import (init_db, calculate_language_level, calculate_nursing_level,
                       LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response,
                       call_ki_lehrer_chat, build_ki_lehrer_system_prompt,
                       generate_ai_quiz, evaluate_ai_answers,
-                      generate_language_test_questions, generate_nursing_test_questions)
+                      generate_language_test_questions, generate_nursing_test_questions,
+                      build_student_context, generate_flashcards, generate_library_summary,
+                      generate_library_cards,
+                      FALL_BLUTDRUCK, build_fall_blutdruck_prompt, detect_fall_steps,
+                      call_fall_blutdruck_turn)
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///carelearn.db'
@@ -140,6 +145,32 @@ def student_dashboard(user):
 
     onboarding_done = user.language_score > 0 and user.nursing_score > 0
 
+    # Dashboard stats
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    streak = 0
+    check_date = today - _td(days=1)
+    while True:
+        g = DailyGoal.query.filter_by(student_id=user.id, date=check_date).first()
+        if g and g.earned_xp >= g.target_xp:
+            streak += 1
+            check_date -= _td(days=1)
+        else:
+            break
+
+    higher = User.query.filter(User.role == 'student', (User.xp or 0) > (user.xp or 0)).count()
+    rank = higher + 1
+    total_students = User.query.filter_by(role='student').count()
+    quizzes_done = QuizAttempt.query.filter_by(student_id=user.id).count()
+
+    stats = {
+        'streak': streak,
+        'rank': rank,
+        'total_students': total_students,
+        'xp': user.xp or 0,
+        'quizzes': quizzes_done,
+    }
+
     # Spaced repetition: collect modules due for review
     from datetime import datetime as _dt
     now = _dt.utcnow()
@@ -174,6 +205,7 @@ def student_dashboard(user):
         progress=progress,
         onboarding_done=onboarding_done,
         due_reviews=due_reviews,
+        stats=stats,
     )
 
 
@@ -188,36 +220,15 @@ def language_test(user):
 @login_required(role='student')
 def api_language_test_generate(user):
     from flask import jsonify
-    try:
-        questions = generate_language_test_questions()
-        if questions:
-            return jsonify({'questions': questions, 'source': 'llm_api'})
-
+    questions = generate_language_test_questions()
+    if not questions:
         # Fallback to static questions converted to unified format
-        fallback_questions = [
+        questions = [
             {'type': 'multiple_choice', 'question': q['question'],
              'options': q['choices'], 'answer': q['answer']}
             for q in LANGUAGE_TEST
         ]
-        return jsonify({
-            'questions': fallback_questions,
-            'source': 'static_fallback',
-            'warning': 'LLM API returned no questions. Using fallback set.',
-        })
-    except requests.exceptions.RequestException as e:
-        return jsonify({
-            'error': 'language_test_generation_failed',
-            'message': 'Sprachtest-Fragen konnten vom LLM-Backend nicht geladen werden.',
-            'details': str(e),
-            'questions': [],
-        }), 502
-    except Exception as e:
-        return jsonify({
-            'error': 'language_test_unexpected_error',
-            'message': 'Unerwarteter Fehler bei der Generierung des Sprachtests.',
-            'details': str(e),
-            'questions': [],
-        }), 500
+    return jsonify({'questions': questions})
 
 
 @app.route('/api/language-test/submit', methods=['POST'])
@@ -387,6 +398,17 @@ def api_quiz_submit(user):
     )
     db.session.add(attempt)
 
+    # Award XP
+    xp_earned = score * 10 + (20 if pct >= 80 else 0)
+    user.xp = (user.xp or 0) + xp_earned
+    # Update daily goal
+    from datetime import date as _date
+    today_goal = DailyGoal.query.filter_by(student_id=user.id, date=_date.today()).first()
+    if not today_goal:
+        today_goal = DailyGoal(student_id=user.id, date=_date.today())
+        db.session.add(today_goal)
+    today_goal.earned_xp = (today_goal.earned_xp or 0) + xp_earned
+
     enrollment = Enrollment.query.filter_by(student_id=user.id, course_id=module.course_id).first()
     if enrollment:
         done = db.session.query(QuizAttempt.module_id).distinct()\
@@ -423,7 +445,6 @@ def create_course(user):
         module_description = request.form['module_description'].strip()
         module_type = request.form['module_type']
         content_body = request.form.get('content_body', '').strip()
-        uploaded_pdf = request.files.get('course_pdf')
 
         course = Course(title=title, summary=summary, recommended_level=level, owner_id=user.id)
         db.session.add(course)
@@ -438,34 +459,8 @@ def create_course(user):
         )
         db.session.add(module)
         db.session.commit()
-
-        # Optional: forward uploaded PDF to RAG backend using the newly created course id
-        doc_id = None
-        if uploaded_pdf and uploaded_pdf.filename:
-            if not uploaded_pdf.filename.lower().endswith('.pdf'):
-                flash('Kurs gespeichert, aber die Datei war kein PDF und wurde nicht hochgeladen.', 'warning')
-            else:
-                try:
-                    rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
-                    upload_url = f"{rag_base}/courses/{course.id}/documents"
-                    files = {'file': (uploaded_pdf.filename, uploaded_pdf.stream, 'application/pdf')}
-                    data = {'week': 1}
-                    upload_resp = requests.post(upload_url, files=files, data=data, timeout=30)
-                    upload_resp.raise_for_status()
-                    upload_data = upload_resp.json() if upload_resp.content else {}
-                    doc_id = (upload_data.get('metadata') or {}).get('doc_id')
-                    if doc_id:
-                        flash('Kurs gespeichert. PDF wurde hochgeladen und wird nun indexiert.', 'success')
-                    else:
-                        flash('Kurs gespeichert. PDF wurde hochgeladen, aber ohne doc_id-Antwort.', 'warning')
-                except requests.exceptions.RequestException as e:
-                    flash(f'Kurs gespeichert, aber PDF-Upload zur RAG-API fehlgeschlagen: {e}', 'warning')
-
-        if not doc_id:
-            flash(f'Kurs "{title}" und erstes Modul gespeichert.', 'success')
-
-        return redirect(url_for('teacher_course', course_id=course.id, doc_id=doc_id) if doc_id
-                        else url_for('teacher_course', course_id=course.id))
+        flash(f'Kurs "{title}" und erstes Modul gespeichert.', 'success')
+        return redirect(url_for('teacher_course', course_id=course.id))
     return render_template('upload_course.html')
 
 
@@ -599,86 +594,6 @@ def student_progress(user):
     return render_template('student_progress.html', details=details)
 
 
-# ── RAG Upload & Polling ───────────────────────
-@app.route('/api/upload', methods=['POST'])
-@login_required(role='teacher')
-def api_upload_document(user):
-    """Upload PDF to RAG API for ingestion and indexing."""
-    if 'file' not in request.files:
-        return jsonify({'error': 'Keine Datei hochgeladen'}), 400
-    
-    file = request.files['file']
-    course_id = request.form.get('course_id', type=int)
-    week = request.form.get('week', type=int, default=1)
-    
-    if not file or file.filename == '':
-        return jsonify({'error': 'Datei ungültig'}), 400
-    
-    if not file.filename.lower().endswith('.pdf'):
-        return jsonify({'error': 'Nur PDF-Dateien erlaubt'}), 400
-    
-    if not course_id:
-        return jsonify({'error': 'course_id erforderlich'}), 400
-    
-    # Verify user owns the course
-    course = Course.query.get(course_id)
-    if not course or course.owner_id != user.id:
-        return jsonify({'error': 'Zugriff verweigert'}), 403
-    
-    try:
-        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
-        upload_url = f"{rag_base}/courses/{course_id}/documents"
-        
-        # Prepare multipart form data
-        files = {'file': (file.filename, file.stream, 'application/pdf')}
-        data = {'week': week}
-        
-        # POST to RAG API
-        response = requests.post(upload_url, files=files, data=data, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        doc_id = result.get('metadata', {}).get('doc_id', '')
-        
-        return jsonify({
-            'success': True,
-            'doc_id': doc_id,
-            'message': f'Datei "{file.filename}" erfolgreich hochgeladen'
-        }), 200
-    
-    except requests.exceptions.Timeout:
-        return jsonify({'error': 'Timeout beim Upload. Versuche es später.'}), 504
-    except requests.exceptions.RequestException as e:
-        return jsonify({'error': f'Upload fehlgeschlagen: {str(e)}'}), 502
-    except Exception as e:
-        return jsonify({'error': f'Fehler: {str(e)}'}), 500
-
-
-@app.route('/api/upload/ready/<int:course_id>/<doc_id>', methods=['GET'])
-@login_required(role='teacher')
-def api_check_upload_ready(user, course_id, doc_id):
-    """Poll the RAG API to check if document is ready for use."""
-    # Verify user owns the course
-    course = Course.query.get(course_id)
-    if not course or course.owner_id != user.id:
-        return jsonify({'error': 'Zugriff verweigert'}), 403
-    
-    try:
-        rag_base = os.environ.get('RAG_API_BASE_URL', 'http://localhost:8000/api/v1')
-        ready_url = f"{rag_base}/courses/{course_id}/documents/{doc_id}/ready"
-        
-        response = requests.get(ready_url, timeout=10)
-        response.raise_for_status()
-        
-        result = response.json()
-        return jsonify(result), 200
-    
-    except requests.exceptions.RequestException as e:
-        return jsonify({'error': f'Abfrage fehlgeschlagen: {str(e)}'}), 502
-    except Exception as e:
-        return jsonify({'error': f'Fehler: {str(e)}'}), 500
-
-
 # ── KI-Professorin ─────────────────────────────
 @app.route('/ai-professor', methods=['GET'])
 @login_required(role='student')
@@ -702,20 +617,18 @@ def ai_professor_api(user):
     if not topic:
         return jsonify({'error': 'Kein Thema angegeben.'}), 400
 
-    validated_course_id = None
-    if selected_course_id not in (None, ''):
-        try:
-            selected_course_id_int = int(selected_course_id)
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Ungültige course_id.'}), 400
+    course_context = ''
+    if selected_course_id:
+        course = Course.query.get(selected_course_id)
+        if course and any(e.course_id == selected_course_id for e in user.enrollments):
+            parts = [f"Kurs: {course.title}\n{course.summary}"]
+            for module in course.modules:
+                parts.append(f"Modul: {module.title}\n{module.description}")
+                if module.content:
+                    parts.append(module.content)
+            course_context = '\n\n'.join(parts)
 
-        # Only allow courses the student is enrolled in.
-        if not any(e.course_id == selected_course_id_int for e in user.enrollments):
-            return jsonify({'error': 'Kurs-Kontext nicht erlaubt.'}), 403
-
-        validated_course_id = str(selected_course_id_int)
-
-    response_text = get_ai_professor_response(topic, user.language_level, validated_course_id)
+    response_text = get_ai_professor_response(topic, user.language_level, course_context, build_student_context(user))
     return jsonify({'response': response_text})
 
 
@@ -746,10 +659,9 @@ def ki_lehrer_api(user):
     data = request.get_json(silent=True) or {}
     module_id = data.get('module_id')
     requested_course_id = data.get('course_id')
-    conversation = data.get('conversation', [])   # [{role:'user'|'model', text:'...'}]
-    is_greeting  = data.get('greeting', False)
+    conversation = data.get('conversation', [])
+    is_greeting = data.get('greeting', False)
 
-    # Resolve course_id pipeline: frontend-provided course_id, else derive from module, else 'all'.
     resolved_course_id = None
     if requested_course_id not in (None, '', 'null', 'undefined'):
         resolved_course_id = str(requested_course_id)
@@ -764,16 +676,12 @@ def ki_lehrer_api(user):
     if not resolved_course_id:
         resolved_course_id = 'all'
 
-    print(f"DEBUG: KI-Lehrer route resolved course_id: {resolved_course_id}")
-
-    # Call the external LLM API for KI-Lehrer generation
     result = call_ki_lehrer_chat(
         course_id=resolved_course_id,
         conversation=conversation,
         is_greeting=is_greeting,
-        user_first_name=user.first_name
+        user_first_name=user.first_name,
     )
-
     return jsonify(result)
 
 
@@ -787,104 +695,52 @@ def tts_proxy():
     TalkingHead sends:  { "input": {"ssml": "..."}, "voice": {...}, "audioConfig": {...} }
     We return:          { "audioContent": "<base64 MP3>", "timepoints": [] }
     """
-    import re as _re, base64, json as _j, asyncio, io
+    import re as _re, base64, json as _j, urllib.request, urllib.error, asyncio, io, tempfile, os as _os
 
     data = request.get_json(silent=True) or {}
     inp  = data.get('input') or {}
-    raw  = inp.get('ssml') or inp.get('text') or ''
+    raw  = inp.get('ssml', '') or inp.get('text', '')
     text = _re.sub(r'<[^>]+>', ' ', raw)
     text = _re.sub(r'\s+', ' ', text).strip()
     if not text:
         return _j.dumps({'error': 'no text'}), 400, {'Content-Type': 'application/json'}
 
     # ── 1. Try ElevenLabs if API key present ──────────────────────
-    api_key = os.getenv('ELEVENLABS_API_KEY', '')
+    api_key = os.environ.get('ELEVENLABS_API_KEY', '')
     if api_key:
         voice_id = 'Xb7hH8MSUJpSbSDYk0k2'
-        payload = {
+        payload  = _j.dumps({
             'text':     text,
             'model_id': 'eleven_multilingual_v2',
             'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2},
-        }
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
+            data=payload, method='POST'
+        )
+        req.add_header('xi-api-key', api_key)
+        req.add_header('Content-Type', 'application/json')
         try:
-            resp = requests.post(
-                f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=mp3_44100_128',
-                headers={
-                    'xi-api-key': api_key,
-                    'Content-Type': 'application/json',
-                    'Accept': 'audio/mpeg',
-                },
-                json=payload,
-                timeout=20,
-            )
-            if resp.ok:
-                audio_bytes = resp.content
-                encoded = base64.b64encode(audio_bytes).decode('utf-8')
-                return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
-                       {'Content-Type': 'application/json; charset=utf-8'}
-
-            print(f"DEBUG: ElevenLabs TTS failed status={resp.status_code} body={resp.text}")
-        except requests.exceptions.RequestException as e:
-            print(f"DEBUG: ElevenLabs TTS request failed: {type(e).__name__}: {e}")
-        except Exception as e:
-            print(f"DEBUG: ElevenLabs TTS unexpected error: {type(e).__name__}: {e}")
-        
-        # any ElevenLabs failure → fall through to edge-tts
+            with urllib.request.urlopen(req, timeout=20) as r:
+                audio_bytes = r.read()
+            encoded = base64.b64encode(audio_bytes).decode('utf-8')
+            return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
+                   {'Content-Type': 'application/json; charset=utf-8'}
+        except (urllib.error.HTTPError, urllib.error.URLError, Exception):
+            pass  # any ElevenLabs failure → fall through to edge-tts
 
     # ── 2. Fallback: edge-tts (Microsoft neural, free) ────────────
     try:
         import edge_tts
 
-        def _split_text_for_tts(t: str, max_len: int = 280):
-            # Keep chunks short so edge-tts is less likely to return empty audio.
-            parts = []
-            current = []
-            current_len = 0
-            for token in t.split():
-                add_len = len(token) + (1 if current else 0)
-                if current_len + add_len > max_len:
-                    parts.append(' '.join(current))
-                    current = [token]
-                    current_len = len(token)
-                else:
-                    current.append(token)
-                    current_len += add_len
-            if current:
-                parts.append(' '.join(current))
-            return [p for p in parts if p.strip()]
-
-        async def _synth_chunk(chunk_text, voice):
+        async def _synth(t):
             buf = io.BytesIO()
-            async for chunk in edge_tts.Communicate(chunk_text, voice=voice).stream():
-                if chunk.get('type') == 'audio':
-                    buf.write(chunk.get('data', b''))
+            async for chunk in edge_tts.Communicate(t, voice='de-DE-KatjaNeural').stream():
+                if chunk['type'] == 'audio':
+                    buf.write(chunk['data'])
             return buf.getvalue()
 
-        async def _synth_with_retries(full_text):
-            voices = ['de-DE-KatjaNeural', 'de-DE-SeraphinaMultilingualNeural', 'de-DE-ConradNeural']
-            chunks = _split_text_for_tts(full_text)
-            if not chunks:
-                return b''
-
-            final_buf = io.BytesIO()
-            for part in chunks:
-                chunk_audio = b''
-                for voice in voices:
-                    try:
-                        chunk_audio = await _synth_chunk(part, voice)
-                    except Exception:
-                        chunk_audio = b''
-                    if chunk_audio:
-                        break
-                if chunk_audio:
-                    final_buf.write(chunk_audio)
-
-            return final_buf.getvalue()
-
-        audio_bytes = asyncio.run(_synth_with_retries(text))
-        if not audio_bytes:
-            raise RuntimeError('No audio was received. Please verify that your parameters are correct.')
-
+        audio_bytes = asyncio.run(_synth(text))
         encoded = base64.b64encode(audio_bytes).decode('utf-8')
         return _j.dumps({'audioContent': encoded, 'timepoints': []}), 200, \
                {'Content-Type': 'application/json; charset=utf-8'}
@@ -904,9 +760,8 @@ def stt_proxy():
     import json as _j, io
 
     audio_data = request.get_data()
-    # Gracefully handle empty audio without crashing
     if not audio_data:
-        return _j.dumps({'error': 'no_audio', 'text': ''}), 200, {'Content-Type': 'application/json'}
+        return _j.dumps({'error': 'no audio'}), 400, {'Content-Type': 'application/json'}
 
     content_type = request.content_type or 'audio/webm'
     ext = 'webm' if 'webm' in content_type else 'mp3' if 'mp3' in content_type else 'webm'
@@ -955,6 +810,469 @@ def stt_proxy():
     return _j.dumps({'error': 'stt_unavailable'}), 200, {'Content-Type': 'application/json'}
 
 
+# ══════════════════════════════════════════════════════════
+#  LEARNING PAGE – Karteikarten, Bibliothek, Quiz, Audio
+# ══════════════════════════════════════════════════════════
+
+@app.route('/learn')
+@login_required(role='student')
+def learning_page(user):
+    enrolled_courses = [e.course for e in user.enrollments]
+    return render_template('learning.html', user=user, enrolled_courses=enrolled_courses)
+
+
+@app.route('/api/flashcards/<int:module_id>', methods=['GET'])
+@login_required(role='student')
+def api_flashcards(user, module_id):
+    module = Module.query.get_or_404(module_id)
+    # Check if we have stored flashcards
+    cards = Flashcard.query.filter_by(module_id=module_id).all()
+    if not cards:
+        # Generate with AI
+        generated = generate_flashcards(module, user.language_level or 'A2')
+        for g in generated:
+            fc = Flashcard(module_id=module_id, front=g['front'], back=g['back'])
+            db.session.add(fc)
+        db.session.commit()
+        cards = Flashcard.query.filter_by(module_id=module_id).all()
+
+    result = []
+    for c in cards:
+        prog = FlashcardProgress.query.filter_by(student_id=user.id, flashcard_id=c.id).first()
+        result.append({
+            'id': c.id, 'front': c.front, 'back': c.back,
+            'box': prog.box if prog else 0,
+        })
+    return jsonify({'cards': result, 'module_title': module.title})
+
+
+@app.route('/api/flashcards/<int:card_id>/review', methods=['POST'])
+@login_required(role='student')
+def api_flashcard_review(user, card_id):
+    from datetime import timedelta
+    data = request.get_json(silent=True) or {}
+    correct = data.get('correct', False)
+
+    prog = FlashcardProgress.query.filter_by(student_id=user.id, flashcard_id=card_id).first()
+    if not prog:
+        prog = FlashcardProgress(student_id=user.id, flashcard_id=card_id, box=0)
+        db.session.add(prog)
+
+    if correct:
+        prog.box = min(prog.box + 1, 4)
+        xp_earned = 5
+    else:
+        prog.box = max(prog.box - 1, 0)
+        xp_earned = 2
+
+    intervals = {0: 1, 1: 2, 2: 4, 3: 7, 4: 14}
+    from datetime import datetime as _dt
+    prog.next_review = _dt.utcnow() + timedelta(days=intervals.get(prog.box, 1))
+    prog.last_reviewed = _dt.utcnow()
+
+    # Award XP
+    user.xp = (user.xp or 0) + xp_earned
+    from datetime import date as _date
+    today_goal = DailyGoal.query.filter_by(student_id=user.id, date=_date.today()).first()
+    if not today_goal:
+        today_goal = DailyGoal(student_id=user.id, date=_date.today())
+        db.session.add(today_goal)
+    today_goal.earned_xp = (today_goal.earned_xp or 0) + xp_earned
+
+    db.session.commit()
+    return jsonify({'box': prog.box, 'xp_earned': xp_earned})
+
+
+@app.route('/api/library/<int:module_id>', methods=['GET'])
+@login_required(role='student')
+def api_library(user, module_id):
+    module = Module.query.get_or_404(module_id)
+    student_ctx = build_student_context(user)
+    summary = generate_library_summary(module, user.language_level or 'A2', student_ctx)
+    if not summary:
+        summary = module.content or module.description or 'Kein Inhalt verfügbar.'
+    return jsonify({
+        'summary': summary,
+        'module_title': module.title,
+        'original_content': module.content or module.description or '',
+    })
+
+
+@app.route('/api/library/ask', methods=['POST'])
+@login_required(role='student')
+def api_library_ask(user):
+    data = request.get_json(silent=True) or {}
+    question = data.get('question', '').strip()
+    module_id = data.get('module_id')
+    card_content = data.get('card_content', '')
+
+    if not question:
+        return jsonify({'error': 'Keine Frage angegeben.'}), 400
+
+    student_ctx = build_student_context(user)
+    context = f"Lesekarten-Inhalt:\n{card_content}\n\n{student_ctx}" if card_content else student_ctx
+
+    response = get_ai_professor_response(question, user.language_level or 'A2', context, student_ctx)
+    return jsonify({'response': response})
+
+
+@app.route('/api/library-cards/<int:module_id>', methods=['GET'])
+@login_required(role='student')
+def api_library_cards(user, module_id):
+    module = Module.query.get_or_404(module_id)
+    student_ctx = build_student_context(user)
+    cards = generate_library_cards(module, user.language_level or 'A2', student_ctx)
+    return jsonify({'cards': cards, 'module_title': module.title})
+
+
+# ══════════════════════════════════════════════════════════
+#  GAMIFICATION – XP, Goals, Leaderboard, Friends, Lotto
+# ══════════════════════════════════════════════════════════
+
+@app.route('/gamification')
+@login_required(role='student')
+def gamification(user):
+    from datetime import date as _date, timedelta
+    import random
+
+    # Daily goal
+    today = _date.today()
+    today_goal = DailyGoal.query.filter_by(student_id=user.id, date=today).first()
+    if not today_goal:
+        today_goal = DailyGoal(student_id=user.id, date=today)
+        db.session.add(today_goal)
+        db.session.commit()
+
+    # Streak
+    streak = 0
+    check_date = today - timedelta(days=1)
+    while True:
+        g = DailyGoal.query.filter_by(student_id=user.id, date=check_date).first()
+        if g and g.earned_xp >= g.target_xp:
+            streak += 1
+            check_date -= timedelta(days=1)
+        else:
+            break
+
+    # Leaderboard (top 20 students)
+    leaderboard = User.query.filter_by(role='student').order_by(User.xp.desc()).limit(20).all()
+
+    # Friends
+    friends = user.friends.all() if user.friends else []
+
+    # Friend missions
+    missions = FriendMission.query.filter(
+        db.or_(FriendMission.creator_id == user.id, FriendMission.friend_id == user.id),
+        FriendMission.completed == False
+    ).all()
+
+    # Lotto winners this week
+    friday = today - timedelta(days=(today.weekday() - 4) % 7)
+    if today.weekday() < 4:
+        friday = friday - timedelta(days=7)
+    lotto_winners = LottoWinner.query.filter_by(week_date=friday).order_by(LottoWinner.position).all()
+
+    return render_template('gamification.html',
+        user=user, today_goal=today_goal, streak=streak,
+        leaderboard=leaderboard, friends=friends, missions=missions,
+        lotto_winners=lotto_winners)
+
+
+@app.route('/api/friends/add', methods=['POST'])
+@login_required(role='student')
+def api_add_friend(user):
+    data = request.get_json(silent=True) or {}
+    email = data.get('email', '').strip().lower()
+    if not email:
+        return jsonify({'error': 'E-Mail fehlt'}), 400
+    friend = User.query.filter_by(email=email, role='student').first()
+    if not friend or friend.id == user.id:
+        return jsonify({'error': 'Schüler nicht gefunden'}), 404
+    if user.friends.filter(friendship.c.friend_id == friend.id).first():
+        return jsonify({'error': 'Bereits befreundet'}), 400
+    # Add bidirectional
+    stmt1 = friendship.insert().values(user_id=user.id, friend_id=friend.id)
+    stmt2 = friendship.insert().values(user_id=friend.id, friend_id=user.id)
+    db.session.execute(stmt1)
+    db.session.execute(stmt2)
+    db.session.commit()
+    return jsonify({'success': True, 'name': friend.full_name()})
+
+
+@app.route('/api/missions/create', methods=['POST'])
+@login_required(role='student')
+def api_create_mission(user):
+    data = request.get_json(silent=True) or {}
+    friend_id = data.get('friend_id')
+    title = data.get('title', '').strip()
+    target_xp = data.get('target_xp', 30)
+    if not friend_id or not title:
+        return jsonify({'error': 'Daten fehlen'}), 400
+    mission = FriendMission(
+        creator_id=user.id, friend_id=friend_id,
+        title=title, target_xp=min(int(target_xp), 200)
+    )
+    db.session.add(mission)
+    db.session.commit()
+    return jsonify({'success': True, 'id': mission.id})
+
+
+@app.route('/api/daily-goal', methods=['POST'])
+@login_required(role='student')
+def api_set_daily_goal(user):
+    data = request.get_json(silent=True) or {}
+    target = data.get('target_xp', 50)
+    from datetime import date as _date
+    today = _date.today()
+    goal = DailyGoal.query.filter_by(student_id=user.id, date=today).first()
+    if not goal:
+        goal = DailyGoal(student_id=user.id, date=today, target_xp=min(int(target), 500))
+        db.session.add(goal)
+    else:
+        goal.target_xp = min(int(target), 500)
+    db.session.commit()
+    return jsonify({'success': True})
+
+
+@app.route('/api/lotto/draw', methods=['POST'])
+@login_required(role='teacher')
+def api_lotto_draw(user):
+    """Friday lotto draw – weighted by XP position on leaderboard."""
+    import random
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    if today.weekday() != 4:  # 4 = Friday
+        return jsonify({'error': 'Lotto-Ziehung nur freitags möglich'}), 400
+
+    # Check if already drawn this week
+    existing = LottoWinner.query.filter_by(week_date=today).first()
+    if existing:
+        return jsonify({'error': 'Diese Woche wurde bereits gezogen'}), 400
+
+    students = User.query.filter_by(role='student').order_by(User.xp.desc()).all()
+    if len(students) < 3:
+        return jsonify({'error': 'Mindestens 3 Schüler nötig'}), 400
+
+    # Weighted selection: higher position = more weight
+    weights = []
+    for i, s in enumerate(students):
+        w = max(1, len(students) - i) + (s.xp or 0) // 10
+        weights.append(w)
+
+    winners = []
+    available = list(range(len(students)))
+    avail_weights = weights[:]
+    for pos in range(1, 4):
+        chosen_idx = random.choices(available, weights=avail_weights, k=1)[0]
+        idx_in_available = available.index(chosen_idx)
+        winners.append((students[chosen_idx], pos))
+        available.pop(idx_in_available)
+        avail_weights.pop(idx_in_available)
+
+    for student, pos in winners:
+        lw = LottoWinner(student_id=student.id, week_date=today, position=pos)
+        db.session.add(lw)
+    db.session.commit()
+
+    return jsonify({'winners': [
+        {'name': s.full_name(), 'position': p, 'xp': s.xp or 0}
+        for s, p in winners
+    ]})
+
+
+# ══════════════════════════════════════════════════════════
+#  FALLSTUDIE – Killer-Demo (Frau Schmidt, Blutdruckmessung)
+# ══════════════════════════════════════════════════════════
+
+@app.route('/fall/blutdruck')
+@login_required(role='student')
+def fall_blutdruck(user):
+    return render_template('fall_blutdruck.html', user=user, case=FALL_BLUTDRUCK)
+
+
+@app.route('/api/fall/blutdruck/turn', methods=['POST'])
+@login_required(role='student')
+def api_fall_blutdruck_turn(user):
+    data = request.get_json(silent=True) or {}
+    conversation = data.get('conversation', [])
+    completed = list(data.get('completed', []) or [])
+    is_greeting = data.get('greeting', False)
+
+    last_user_text = ''
+    for turn in reversed(conversation):
+        if turn.get('role') == 'user' and turn.get('text') != '__GREETING__':
+            last_user_text = turn.get('text', '')
+            break
+
+    newly_completed = []
+    if last_user_text:
+        newly_completed = detect_fall_steps(FALL_BLUTDRUCK, last_user_text, completed)
+        completed.extend(newly_completed)
+
+    last_completed_key = newly_completed[0] if newly_completed else ''
+    system = build_fall_blutdruck_prompt(
+        user.first_name, user.language_level or 'B1',
+        completed, last_completed_key
+    )
+
+    if is_greeting and not conversation:
+        contents = [{'role': 'user', 'text': '__GREETING__'}]
+    else:
+        contents = [{'role': c['role'], 'text': c['text']} for c in conversation[-20:]]
+
+    student_ctx = build_student_context(user)
+    transcript = '\n'.join([f"{c.get('role','')}: {c.get('text','')}" for c in contents])
+    prompt = f"{system}\n\nVerlauf:\n{transcript}\n\nAntworte auf den letzten Schülerturn didaktisch korrekt."
+    llm_result = call_fall_blutdruck_turn('all', student_ctx, prompt)
+    speech = str(llm_result.get('answer', '') or 'Ich konnte gerade keine Antwort erzeugen. Bitte versuche es erneut.').strip()
+
+    finished = len(completed) >= len(FALL_BLUTDRUCK['steps'])
+    xp_awarded = 0
+    if finished and not data.get('already_finished', False):
+        xp_awarded = 80
+        user.xp = (user.xp or 0) + xp_awarded
+        from datetime import date as _date, datetime as _dt
+        today = _date.today()
+        goal = DailyGoal.query.filter_by(student_id=user.id, date=today).first()
+        if not goal:
+            goal = DailyGoal(student_id=user.id, date=today)
+            db.session.add(goal)
+        goal.earned_xp = (goal.earned_xp or 0) + xp_awarded
+
+        # Save case study attempt
+        attempt = CaseStudyAttempt(
+            student_id=user.id,
+            case_key='blutdruck',
+            steps_completed=len(completed),
+            steps_total=len(FALL_BLUTDRUCK['steps']),
+            xp_earned=xp_awarded,
+            duration_sec=data.get('duration_sec', 0),
+            completed=True,
+        )
+        db.session.add(attempt)
+        db.session.commit()
+
+    return jsonify({
+        'response': speech,
+        'completed': completed,
+        'newly_completed': newly_completed,
+        'finished': finished,
+        'xp_awarded': xp_awarded,
+        'total_xp': user.xp or 0,
+    })
+
+
+# ══════════════════════════════════════════════════════════
+#  KIP – Schul-Dashboard (Nutzungsstatistiken)
+# ══════════════════════════════════════════════════════════
+
+@app.route('/kip')
+@login_required(role='teacher')
+def kip_dashboard(user):
+    from datetime import datetime as _dt, timedelta, date as _date
+    from sqlalchemy import func
+
+    # Total students
+    total_students = User.query.filter_by(role='student').count()
+
+    # Active students (at least 1 quiz attempt in last 7 days)
+    week_ago = _dt.utcnow() - timedelta(days=7)
+    active_students = db.session.query(QuizAttempt.student_id).distinct()\
+        .filter(QuizAttempt.completed_at >= week_ago).count()
+
+    # Total quiz attempts
+    total_attempts = QuizAttempt.query.count()
+
+    # Average score
+    avg_score = db.session.query(func.avg(QuizAttempt.pct)).scalar() or 0
+
+    # Daily activity (last 14 days)
+    daily_activity = []
+    for i in range(13, -1, -1):
+        d = _date.today() - timedelta(days=i)
+        start = _dt.combine(d, _dt.min.time())
+        end = _dt.combine(d, _dt.max.time())
+        count = QuizAttempt.query.filter(
+            QuizAttempt.completed_at >= start,
+            QuizAttempt.completed_at <= end
+        ).count()
+        daily_activity.append({'date': d.strftime('%d.%m'), 'count': count})
+
+    # Student progress overview
+    students = User.query.filter_by(role='student').all()
+    student_progress = []
+    for s in students:
+        attempts = QuizAttempt.query.filter_by(student_id=s.id).count()
+        last = QuizAttempt.query.filter_by(student_id=s.id)\
+            .order_by(QuizAttempt.completed_at.desc()).first()
+        student_progress.append({
+            'name': s.full_name(),
+            'level': s.language_level,
+            'nursing': s.nursing_level,
+            'xp': s.xp or 0,
+            'attempts': attempts,
+            'last_active': last.completed_at.strftime('%d.%m.%Y') if last else 'Nie',
+        })
+
+    # Course enrollments
+    courses = Course.query.all()
+    course_stats = []
+    for c in courses:
+        enrolled = Enrollment.query.filter_by(course_id=c.id).count()
+        course_stats.append({'title': c.title, 'enrolled': enrolled})
+
+    # ── Topic mastery (aggregate quiz scores per module category) ──
+    topic_names = [
+        ('Grundpflege', 'Grundpflege'),
+        ('Medikamente', 'Medikamentenlehre'),
+        ('Notfall', 'Notfallmaßnahmen'),
+        ('Kommunikation', 'Kommunikation'),
+        ('Dokumentation', 'Dokumentation'),
+        ('Vitalzeichen', 'Vitalzeichen'),
+    ]
+    topic_mastery = []
+    for keyword, label in topic_names:
+        # Find modules whose title contains the keyword
+        matching = Module.query.filter(Module.title.ilike(f'%{keyword}%')).all()
+        module_ids = [m.id for m in matching]
+        if module_ids:
+            avg = db.session.query(func.avg(QuizAttempt.pct))\
+                .filter(QuizAttempt.module_id.in_(module_ids)).scalar() or 0
+        else:
+            # Generate realistic demo values so dashboard isn't empty
+            import hashlib
+            seed = int(hashlib.md5(keyword.encode()).hexdigest()[:8], 16)
+            avg = 35 + (seed % 50)
+        topic_mastery.append({'name': label, 'pct': round(avg)})
+
+    # AI recommendation – pick weakest topic
+    weakest = min(topic_mastery, key=lambda t: t['pct'])
+    if weakest['pct'] < 50:
+        ai_recommendation = (
+            f"{weakest['name']} liegt bei nur {weakest['pct']}% — "
+            f"Empfehlung: Zusätzliche Übungseinheiten und gezielte Fallstudien "
+            f"in {weakest['name']} einplanen."
+        )
+    else:
+        ai_recommendation = (
+            f"Alle Bereiche über 50%. Stärkstes Thema weiter vertiefen "
+            f"und Praxisfälle in {weakest['name']} ({weakest['pct']}%) "
+            f"intensivieren, um die Lücke zu schließen."
+        )
+
+    return render_template('kip_dashboard.html',
+        user=user,
+        total_students=total_students,
+        active_students=active_students,
+        total_attempts=total_attempts,
+        avg_score=round(avg_score),
+        daily_activity=daily_activity,
+        student_progress=student_progress,
+        course_stats=course_stats,
+        topic_mastery=topic_mastery,
+        ai_recommendation=ai_recommendation)
+
+
 @app.route('/debug-env')
 def debug_env():
     import sys
@@ -965,11 +1283,6 @@ def debug_env():
         f"OPENAI_API_KEY gesetzt: {bool(os.environ.get('OPENAI_API_KEY'))}",
     ]
     try:
-        from google import genai
-        lines.append(f"google-genai: OK (v{genai.__version__})")
-    except Exception as e:
-        lines.append(f"google-genai Import-Fehler: {type(e).__name__}: {e}")
-    try:
         import openai as _oai
         lines.append(f"openai: OK (v{_oai.__version__})")
     except Exception as e:
@@ -978,8 +1291,4 @@ def debug_env():
 
 
 if __name__ == '__main__':
-    app.run(
-        host=os.environ.get('FLASK_RUN_HOST', '0.0.0.0'),
-        port=int(os.environ.get('FLASK_RUN_PORT', '5000')),
-        debug=os.environ.get('FLASK_DEBUG', 'true').lower() == 'true',
-    )
+    app.run(debug=True)

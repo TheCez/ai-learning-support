@@ -1,0 +1,108 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="kip-page">
+  <p class="meta" style="margin:0 0 4px;">Schulsicht · {{ user.first_name }} {{ user.last_name }}</p>
+  <h1 class="page-title" style="margin:0 0 24px;">
+    📊 KIP: <span style="color:var(--accent)">{{ active_students }} aktive</span> Schüler:innen
+  </h1>
+
+  <!-- Overview Cards -->
+  <div class="kip-overview">
+    <div class="card kip-stat">
+      <div class="kip-stat-value">{{ total_students }}</div>
+      <div class="kip-stat-label">Schüler gesamt</div>
+    </div>
+    <div class="card kip-stat">
+      <div class="kip-stat-value">{{ active_students }}</div>
+      <div class="kip-stat-label">Aktiv (7 Tage)</div>
+    </div>
+    <div class="card kip-stat">
+      <div class="kip-stat-value">{{ total_attempts }}</div>
+      <div class="kip-stat-label">Quiz-Versuche</div>
+    </div>
+    <div class="card kip-stat">
+      <div class="kip-stat-value">{{ avg_score }}%</div>
+      <div class="kip-stat-label">Ø Ergebnis</div>
+    </div>
+  </div>
+
+  <div class="grid-two">
+    <!-- Daily Activity Chart -->
+    <div class="card kip-activity">
+      <h2>📈 Aktivität (14 Tage)</h2>
+      <div class="activity-chart">
+        {% set max_count = daily_activity | map(attribute='count') | max or 1 %}
+        {% for day in daily_activity %}
+        <div class="activity-bar-wrapper">
+          <div class="activity-bar" style="height: {{ (day.count / max_count * 100) | int }}%"
+               title="{{ day.date }}: {{ day.count }} Versuche">
+            <span class="activity-count">{{ day.count }}</span>
+          </div>
+          <span class="activity-date">{{ day.date }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Topic Mastery (AI Insights like JSX TeacherDashboard) -->
+    <div class="card">
+      <h2>🎯 Themenbeherrschung</h2>
+      {% for topic in topic_mastery %}
+      <div class="kip-mastery-bar">
+        <span class="kip-mastery-label">{{ topic.name }}</span>
+        <div class="kip-mastery-track">
+          <div class="kip-mastery-fill {% if topic.pct >= 70 %}high{% elif topic.pct >= 45 %}mid{% else %}low{% endif %}"
+               style="width: {{ topic.pct }}%"></div>
+        </div>
+        <span class="kip-mastery-pct" style="color: {% if topic.pct < 50 %}var(--error){% elif topic.pct < 70 %}var(--warning){% else %}var(--success){% endif %}">{{ topic.pct }}%</span>
+      </div>
+      {% endfor %}
+
+      <!-- AI Recommendation -->
+      <div class="kip-insight">
+        <strong>💡 KI-Empfehlung:</strong> {{ ai_recommendation }}
+      </div>
+    </div>
+  </div>
+
+  <!-- Course Enrollment -->
+  <div class="card kip-courses">
+    <h2>📚 Kurseinschreibungen</h2>
+    <table class="kip-table">
+      <thead><tr><th>Kurs</th><th>Eingeschrieben</th></tr></thead>
+      <tbody>
+        {% for c in course_stats %}
+        <tr><td>{{ c.title }}</td><td>{{ c.enrolled }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Student Progress -->
+  <div class="card kip-students">
+    <h2>👩‍🎓 Schüler-Übersicht</h2>
+    <div class="table-scroll">
+      <table class="kip-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Sprachlevel</th><th>Pflegelevel</th>
+            <th>XP</th><th>Versuche</th><th>Letzte Aktivität</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in student_progress %}
+          <tr>
+            <td>{{ s.name }}</td>
+            <td>{{ s.level or '–' }}</td>
+            <td>{{ s.nursing or '–' }}</td>
+            <td>{{ s.xp }}</td>
+            <td>{{ s.attempts }}</td>
+            <td>{{ s.last_active }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

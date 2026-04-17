@@ -26,12 +26,15 @@
         {% if current_user %}
           {% if current_user.role == 'student' %}
             <a href="{{ url_for('student_dashboard') }}">Dashboard</a>
-            <a href="{{ url_for('courses') }}">Kurse</a>
+            <a href="{{ url_for('fall_blutdruck') }}">Fallstudie</a>
+            <a href="{{ url_for('learning_page') }}">Lernen</a>
             <a href="{{ url_for('ki_lehrer') }}">KI-Lehrer</a>
+            <a href="{{ url_for('gamification') }}">Erfolge</a>
           {% else %}
             <a href="{{ url_for('teacher_dashboard') }}">Dashboard</a>
             <a href="{{ url_for('create_course') }}">Kurs erstellen</a>
             <a href="{{ url_for('student_progress') }}">Schüler-Fortschritt</a>
+            <a href="{{ url_for('kip_dashboard') }}">KIP</a>
           {% endif %}
           <span class="topbar-user">{{ current_user.first_name }}</span>
           <a class="button button-sm button-secondary" href="{{ url_for('logout') }}">Abmelden</a>

@@ -1,36 +1,19 @@
 import os
-import json as _json
 import requests
 from models import db, User, Course, Module
 
-genai = None
-genai_types = None
+def _llm_base() -> str:
+    return os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001').rstrip('/')
 
 
-def _load_gemini():
-    """Lazily load google-genai so only onboarding test depends on it."""
-    global genai, genai_types
-    if genai is not None and genai_types is not None:
-        return True
+def _safe_post(path: str, payload: dict, timeout: int = 30) -> dict:
     try:
-        from google import genai as _genai
-        from google.genai import types as _types
-        genai = _genai
-        genai_types = _types
-        return True
+        resp = requests.post(f"{_llm_base()}{path}", json=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        return data if isinstance(data, dict) else {}
     except Exception:
-        return False
-
-
-def _strip_md_code(text: str) -> str:
-    """Strip markdown code fences from model output before JSON parsing."""
-    text = (text or '').strip()
-    if text.startswith('```'):
-        lines = text.split('\n')
-        text = '\n'.join(lines[1:])
-        if text.rstrip().endswith('```'):
-            text = text.rstrip()[:-3]
-    return text.strip()
+        return {}
 
 LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1']
 
@@ -257,108 +240,78 @@ def calculate_nursing_level(score: int) -> str:
     return 'advanced'
 
 
-def get_ai_professor_response(topic: str, student_level: str, selected_course_id: str | None = None) -> str:
-    """Calls external LLM API for single-turn QA chat (AI-Professor)."""
-    if not topic:
-        topic = 'Pflegewissen allgemein'
-
-    try:
-        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
-        generate_answer_url = f"{llm_base}/generate_answer"
-        
-        payload = {'query': topic}
-        if selected_course_id:
-            payload['course_id'] = str(selected_course_id)
-        
-        response = requests.post(generate_answer_url, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        answer_text = result.get('answer', '')
-        images = result.get('images', [])
-        
-        # If there are images, append them as linked text to the answer
-        if images:
-            answer_text += '\n\n[Bilder verfügbar in der Ui]'
-        
-        return answer_text if answer_text else 'Keine Antwort erhalten.'
-    
-    except requests.exceptions.Timeout:
-        return 'Professor KI: Timeout bei der Anfrage. Bitte versuche es später.'
-    except requests.exceptions.RequestException as e:
-        return f'Professor KI: Verbindungsfehler zur KI-Dienste. ({str(e)})'
-    except Exception as e:
-        return f'Professor KI: Fehler beim Abruf ({type(e).__name__}: {str(e)})'
+def get_ai_professor_response(topic: str, student_level: str, course_context: str = '', student_context: str = '') -> str:
+    """Antwort über interne llm_api /generate_answer (kein direkter Gemini-Aufruf)."""
+    query = (topic or 'Pflegewissen allgemein').strip()
+    if course_context:
+        query += f"\n\nKurskontext:\n{course_context}"
+    payload = {
+        'course_id': 'all',
+        'query': query,
+        'student_context': student_context or '',
+        'persona': 'ki_professor',
+    }
+    result = _safe_post('/generate_answer', payload)
+    answer = str(result.get('answer', '') or '').strip()
+    return answer or 'Keine Antwort erhalten.'
 
 
 def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = False, user_first_name: str = '') -> dict:
-    """Calls external LLM API for multi-turn KI-Lehrer presentation mode."""
-    try:
-        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
-        generate_presentation_url = f"{llm_base}/generate_presentation"
-        
-        # Extract the latest user query from conversation
-        query = ''
-        if conversation:
-            # Find the last user message
-            for msg in reversed(conversation):
-                if msg.get('role') == 'user':
-                    query = msg.get('text', '')
-                    break
-        
-        if not query and not is_greeting:
-            query = 'Erkläre mir dieses Modul'
+    """Calls llm_api /generate_presentation for KI-Lehrer."""
+    query = ''
+    for msg in reversed(conversation or []):
+        if msg.get('role') == 'user':
+            query = str(msg.get('text', '') or '').strip()
+            break
+    if is_greeting and not query:
+        query = f'Hallo {user_first_name}, starte den Unterricht mit einer kurzen Begrüßung und dem ersten Kernpunkt.'
+    if not query:
+        query = 'Erkläre mir dieses Modul.'
 
-        course_id_str = str(course_id) if course_id not in (None, '') else 'all'
-        print(f"DEBUG: Forwarding to LLM API with course_id: {course_id_str}")
-        
-        payload = {
-            'course_id': course_id_str,
-            'query': query,
-            'persona': 'ki_professor',
-        }
-        
-        response = requests.post(generate_presentation_url, json=payload, timeout=30)
-        response.raise_for_status()
-
-        # Preserve the LLM response shape (including per-slide spoken_text)
-        # so the frontend can run an event-driven slide/audio loop.
-        result = response.json()
-        if isinstance(result, dict):
-            return result
-        return {'slides': []}
-    
-    except requests.exceptions.Timeout:
-        return {
-            'response': 'Prof. Wagner: Die Verbindung ist zu langsam. Bitte versuche es später.',
-            'slides': [],
-        }
-    except requests.exceptions.RequestException as e:
-        return {
-            'response': f'Prof. Wagner: Verbindungsfehler ({str(e)}). Bitte überprüfe die Verbindung.',
-            'slides': [],
-        }
-    except Exception as e:
-        return {
-            'response': f'Prof. Wagner: Fehler beim Abruf ({type(e).__name__}). Bitte versuche es später.',
-            'slides': [],
-        }
+    payload = {
+        'course_id': str(course_id or 'all'),
+        'query': query,
+        'persona': 'ki_professor',
+    }
+    data = _safe_post('/generate_presentation', payload)
+    return data if isinstance(data, dict) else {'slides': []}
 
 
-_MODELS = ('gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash')
-_RETRY_CODES = ('429', '503', 'RESOURCE_EXHAUSTED', 'UNAVAILABLE')
+def call_fall_blutdruck_turn(course_id: str, student_context: str, prompt: str) -> dict:
+    """Calls llm_api /generate_answer for case-study turn responses."""
+    payload = {
+        'course_id': str(course_id or 'all'),
+        'query': prompt,
+        'student_context': student_context or '',
+        'persona': 'ki_professor',
+    }
+    return _safe_post('/generate_answer', payload)
 
 
 def call_gemini_chat(system_instruction: str, contents_list: list) -> str:
-    """DEPRECATED: Kept for backwards compatibility. Use call_ki_lehrer_chat instead."""
-    return f"Fehler: Gemini SDK wurde entfernt. Nutze instead die externe LLM API."
+    """Compatibility wrapper: routes through llm_api /generate_answer."""
+    last_user = ''
+    for turn in reversed(contents_list or []):
+        if str(turn.get('role', '')).lower() == 'user':
+            last_user = str(turn.get('text', '') or '').strip()
+            break
+    if not last_user:
+        last_user = 'Bitte erkläre den nächsten Schritt.'
+    payload = {
+        'course_id': 'all',
+        'query': f"{system_instruction}\n\n{last_user}",
+        'persona': 'ki_professor',
+    }
+    result = _safe_post('/generate_answer', payload)
+    return str(result.get('answer', '') or 'Keine Antwort erhalten.').strip()
 
 
 def build_ki_lehrer_system_prompt(first_name: str, language_level: str,
                                    module_title: str, course_title: str,
                                    module_content: str,
                                    today_module_title: str = '',
-                                   today_course_title: str = '') -> str:
+                                   today_course_title: str = '',
+                                   student_context: str = '') -> str:
     level_desc = {
         'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, nur Grundvokabular – jeden Fachbegriff sofort erklären',
         'A2': 'einfaches Deutsch mit Alltagsausdrücken, kurze klare Sätze',
@@ -396,7 +349,7 @@ Deine Erklärungen MÜSSEN sich auf diesen offiziellen Inhalt beziehen:
         'Keine langen Einleitungen.'
     )
 
-    return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
+    prompt_text = f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge mit 20 Jahren Unterrichtserfahrung.
 Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title}).
 
 ## Persönlichkeit
@@ -420,56 +373,225 @@ Du unterrichtest {first_name} im Modul „{module_title}" (Kurs: {course_title})
 - Off-topic-Fragen sanft zurück zum Thema lenken
 - Immer auf Deutsch antworten{module_section}{today_section}"""
 
+    if student_context:
+        prompt_text += f"\n\n## Schülerprofil\n{student_context}\nPasse Erklärungen an diesen Hintergrund an."
+    return prompt_text
+
+
+# ════════════════════════════════════════════════════════════
+#  FALLSTUDIE – Killer-Demo: Blutdruckmessung bei Frau Schmidt
+# ════════════════════════════════════════════════════════════
+
+FALL_BLUTDRUCK = {
+    'slug': 'blutdruck-frau-schmidt',
+    'title': 'Blutdruckmessung bei Frau Schmidt',
+    'level': 'B1',
+    'duration_min': 5,
+    'patient': {
+        'name': 'Frau Schmidt',
+        'age': 78,
+        'room': 'Zimmer 214',
+        'complaint': 'Schwindel beim Aufstehen',
+        'history': 'Bekannte Hypertonie, nimmt Ramipril 5 mg morgens',
+        'order': 'Bitte Blutdruck korrekt am rechten Oberarm messen und dokumentieren.',
+    },
+    'steps': [
+        {'key': 'identitaet', 'label': 'Patientin identifizieren',
+         'hint': 'Name + Geburtsdatum gegen Armband prüfen',
+         'kw': ['identit', 'armband', 'geburt', 'name prüf', 'wer sind', 'überprüf', 'kontrollier', 'wie heißen']},
+        {'key': 'aufklaerung', 'label': 'Maßnahme erklären (Aufklärung)',
+         'hint': 'Erklären, was passiert, und Einverständnis einholen',
+         'kw': ['erklär', 'aufklär', 'einverständnis', 'einverstanden', 'was ich mache', 'darf ich']},
+        {'key': 'ruhe', 'label': '5 Minuten Ruhepause',
+         'hint': 'Patientin in Ruhe sitzen oder liegen lassen',
+         'kw': ['ruhe', '5 minuten', 'fünf minuten', 'entspann', 'warten', 'rast']},
+        {'key': 'manschette', 'label': 'Korrekte Manschettengröße wählen',
+         'hint': 'Oberarmumfang messen, passende Manschette auswählen',
+         'kw': ['manschette', 'größe', 'umfang', 'oberarm', 'breit']},
+        {'key': 'herzhoehe', 'label': 'Manschette in Herzhöhe anlegen',
+         'hint': 'Arm bequem lagern, Manschette 2-3 cm über der Ellenbeuge',
+         'kw': ['herzhöhe', 'herz höhe', 'höhe des herz', 'ellenbeu', 'unterstütz', 'arm lagern', 'arm liegt', 'ablegen']},
+        {'key': 'messen', 'label': 'Messung durchführen',
+         'hint': 'Manschette aufpumpen, langsam ablassen, Werte ablesen',
+         'kw': ['aufpump', 'aufpumpen', 'ablassen', 'ableass', 'stethoskop', 'messen', 'messung', 'ablesen', 'systol', 'diastol']},
+        {'key': 'dokumentieren', 'label': 'Werte dokumentieren & melden',
+         'hint': 'Werte in der Pflegekurve eintragen, bei Auffälligkeiten Arzt informieren',
+         'kw': ['dokument', 'aufschreib', 'notier', 'eintrag', 'kurve', 'arzt informier', 'arzt sagen', 'arzt bescheid', 'meld']},
+    ],
+    'vocab': [
+        ('systolisch',     'oberer Wert beim Blutdruck'),
+        ('diastolisch',    'unterer Wert beim Blutdruck'),
+        ('Manschette',     'aufblasbare Hülle für die Messung'),
+        ('Hypertonie',     'erhöhter Blutdruck'),
+        ('Riva-Rocci',     'Erfinder der Blutdruckmessung – Abkürzung „RR"'),
+        ('Auskultation',   'Abhören mit dem Stethoskop'),
+    ],
+}
+
+
+def detect_fall_steps(case: dict, user_text: str, already_done: list) -> list:
+    """Return the keys of newly-completed steps after this user message."""
+    text = (user_text or '').lower()
+    newly = []
+    for step in case['steps']:
+        if step['key'] in already_done:
+            continue
+        if any(kw in text for kw in step['kw']):
+            newly.append(step['key'])
+    return newly
+
+
+def build_fall_blutdruck_prompt(first_name: str, language_level: str,
+                                completed_keys: list, last_completed: str = '') -> str:
+    """System prompt for the Frau-Schmidt blood-pressure case study."""
+    case = FALL_BLUTDRUCK
+    p = case['patient']
+    level_desc = {
+        'A1': 'sehr einfaches Deutsch, Sätze max. 8 Wörter, Fachbegriffe sofort erklären',
+        'A2': 'einfaches Deutsch, kurze klare Sätze, alltagsnahe Worte',
+        'B1': 'klares Standarddeutsch, Pflegefachbegriffe mit kurzer Erklärung',
+        'B2': 'normales Pflegedeutsch, Fachterminologie frei',
+        'C1': 'vollständige medizinische Terminologie',
+    }.get(language_level, 'verständliches Deutsch')
+
+    done_set = set(completed_keys or [])
+    steps_lines = []
+    next_step = None
+    for i, s in enumerate(case['steps'], start=1):
+        mark = '[✓]' if s['key'] in done_set else '[ ]'
+        steps_lines.append(f"{mark} {i}. {s['label']} — {s['hint']}")
+        if next_step is None and s['key'] not in done_set:
+            next_step = s
+    steps_block = '\n'.join(steps_lines)
+
+    progress_note = ''
+    if last_completed:
+        last_step = next((s for s in case['steps'] if s['key'] == last_completed), None)
+        if last_step:
+            progress_note = (
+                f'\n\n## SOEBEN KORREKT GENANNT\n'
+                f'„{last_step["label"]}" — bestätige das in 1 Satz positiv und konkret '
+                f'(z. B. „Genau, du prüfst das Armband — sicher!"), '
+                f'dann gehe direkt zum NÄCHSTEN offenen Schritt über.'
+            )
+
+    next_block = ''
+    if next_step:
+        next_block = (
+            f'\n\n## NÄCHSTER ZU ERFRAGENDER SCHRITT\n'
+            f'{next_step["label"]} — {next_step["hint"]}\n'
+            f'Stelle dazu EINE kurze offene Frage. Verrate die Antwort NICHT vorab.'
+        )
+    else:
+        next_block = (
+            '\n\n## ALLE SCHRITTE ABGESCHLOSSEN\n'
+            f'Fasse den Fall in 2 Sätzen zusammen, lobe {first_name} ehrlich '
+            'und beende mit „Damit ist der Fall abgeschlossen."'
+        )
+
+    return f"""Du bist Professor Wagner, ein erfahrener Pflegepädagoge.
+Du leitest {first_name} (Sprachniveau {language_level}) Schritt für Schritt durch eine reale Pflegesituation.
+
+## Patientin
+- {p['name']}, {p['age']} Jahre, {p['room']}
+- Beschwerde: {p['complaint']}
+- Vorerkrankung: {p['history']}
+- Auftrag: {p['order']}
+
+## Sprache
+{level_desc}. Halte Antworten KURZ — max. 3 Sätze.
+
+## Persönlichkeit
+- Du nennst dich nie „KI" — du bist Prof. Wagner
+- Sanft, ermutigend, geduldig
+- Sprichst {first_name} mit Vornamen an
+
+## Ablauf-Checkliste (nutze sie als roten Faden)
+{steps_block}{progress_note}{next_block}
+
+## Regeln
+- Genau EINE Frage pro Antwort
+- Niemals mehrere Schritte gleichzeitig abfragen
+- Keine Aufzählungen, kein Markdown — nur fließender Text
+- Bei „__GREETING__" sage exakt: „{first_name}, wir gehen ins Zimmer 214 zu Frau Schmidt. Sie klagt über Schwindel — was machst du als Erstes?"
+"""
+
 
 def generate_slide_from_speech(speech: str, module_title: str) -> tuple:
-    """DEPRECATED: Slide generation is now handled by the external LLM API.
-    
-    This function is kept for backwards compatibility but returns empty.
-    Slides are generated as part of the /generate_presentation response.
-    """
+    """Slide generation is handled by llm_api /generate_presentation."""
     return '', []
 
 
+# ── Student context helper for AI prompts ─────────────
+def build_student_context(user) -> str:
+    """Build a context string describing the student for AI prompts."""
+    parts = [f"Schülerprofil: {user.first_name} {user.last_name}"]
+    parts.append(f"Sprachniveau: {user.language_level or 'A1'}")
+    parts.append(f"Pflegewissen: {user.nursing_level or 'beginner'}")
+    if user.country:
+        parts.append(f"Herkunftsland: {user.country}")
+    if user.language:
+        parts.append(f"Muttersprache: {user.language}")
+    if user.speciality:
+        parts.append(f"Fachbereich: {user.speciality}")
+    return '\n'.join(parts)
+
+
+def generate_flashcards(module, language_level: str, num_cards: int = 6) -> list:
+    """Generate flashcards via llm_api endpoint."""
+    payload = {
+        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
+        'num_cards': int(num_cards or 6),
+        'level': language_level or 'simple',
+    }
+    result = _safe_post('/generate_flashcards', payload)
+    cards = result.get('flashcards', []) if isinstance(result, dict) else []
+    return cards if isinstance(cards, list) else []
+
+
+def generate_library_summary(module, language_level: str, student_context: str = '') -> str:
+    """Generate library summary via llm_api endpoint."""
+    payload = {
+        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
+        'level': language_level or 'simple',
+        'student_context': student_context or '',
+    }
+    result = _safe_post('/generate_library_summary', payload)
+    return str(result.get('summary', '') or '') if isinstance(result, dict) else ''
+
+
+def generate_library_cards(module, language_level: str, student_context: str = '') -> list:
+    """Generate structured library cards via llm_api endpoint."""
+    payload = {
+        'course_id': str(module.course_id if hasattr(module, 'course_id') and module.course_id else getattr(module, 'id', 'all')),
+        'level': language_level or 'simple',
+        'student_context': student_context or '',
+    }
+    result = _safe_post('/generate_library_cards', payload)
+    cards = result.get('cards', []) if isinstance(result, dict) else []
+    return cards if isinstance(cards, list) else []
+
+
 def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
-    """Generate AI quiz questions by calling external LLM API."""
-    if not module:
-        return []
-    
-    try:
-        llm_base = os.environ.get('LLM_API_BASE_URL', 'http://localhost:8001')
-        generate_quiz_url = f"{llm_base}/generate_quiz"
-        
-        payload = {
-            'course_id': str(module.course_id) if module.course_id else '',
-        }
-        
-        response = requests.post(generate_quiz_url, json=payload, timeout=30)
-        response.raise_for_status()
-        
-        result = response.json()
-        quiz_data = result.get('quiz', [])
-        
-        # Map external API format to internal format
-        questions = []
-        for i, q in enumerate(quiz_data[:num_questions]):
-            mapped_q = {
-                'id': i,
-                'type': 'multiple_choice',  # or could be 'free_text'
-                'question': q.get('question', ''),
-                'options': q.get('options', []),
-                'answer': q.get('answer_index', 0),  # Index or text?
-                'explanation': q.get('explanation', ''),
-            }
-            questions.append(mapped_q)
-        
-        return questions
-    
-    except requests.exceptions.Timeout:
-        return []
-    except requests.exceptions.RequestException:
-        return []
-    except Exception:
-        return []
+    """Generate quiz via llm_api /generate_quiz endpoint."""
+    payload = {
+        'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all'
+    }
+    result = _safe_post('/generate_quiz', payload)
+    quiz_data = result.get('quiz', []) if isinstance(result, dict) else []
+
+    questions = []
+    for i, q in enumerate((quiz_data or [])[:num_questions]):
+        questions.append({
+            'id': i,
+            'type': 'multiple_choice',
+            'question': q.get('question', ''),
+            'options': q.get('options', []),
+            'answer': str(q.get('answer_index', 0)),
+            'model_answer': str(q.get('answer_index', 0)),
+            'explanation': q.get('explanation', ''),
+        })
+    return questions
 
 
 def evaluate_ai_answers(questions: list, student_answers: dict, language_level: str) -> list:
@@ -494,43 +616,7 @@ def evaluate_ai_answers(questions: list, student_answers: dict, language_level: 
             model_ans = q.get('model_answer', q.get('answer', ''))
             free_pairs.append((i, q['question'], model_ans, sa))
 
-    # AI batch evaluation for all free-text questions in one call
-    if free_pairs and _load_gemini():
-        api_key = os.environ.get('GOOGLE_API_KEY', '')
-        if api_key:
-            pairs_text = '\n'.join(
-                f'{j+1}. Frage: {qt}\n   Musterantwort: {ma}\n   Schülerantwort: "{sa}"'
-                for j, (_, qt, ma, sa) in enumerate(free_pairs)
-            )
-            prompt = (
-                f'Bewerte {len(free_pairs)} Pflegeschüler-Antworten (Sprachniveau {language_level}).\n'
-                f'Sei großzügig: Inhaltlich korrekte Antworten → score 1, auch bei Rechtschreibfehlern.\n\n'
-                f'{pairs_text}\n\n'
-                f'Antworte NUR mit validem JSON:\n'
-                f'{{"results":[{{"score":1,"feedback":"Sehr gut! ..."}}]}}\n'
-                f'Genau {len(free_pairs)} Einträge im Array.'
-            )
-            client = genai.Client(api_key=api_key)
-            cfg = genai_types.GenerateContentConfig(max_output_tokens=600, temperature=0.2)
-            for model in _MODELS:
-                try:
-                    resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-                    er_list = _json.loads(_strip_md_code(resp.text)).get('results', [])
-                    for k, (orig_i, qt, ma, sa) in enumerate(free_pairs):
-                        er = er_list[k] if k < len(er_list) else {}
-                        results[orig_i] = {
-                            'question': qt,
-                            'student_answer': sa,
-                            'correct_answer': ma,
-                            'is_correct': er.get('score', 0) == 1,
-                            'feedback': er.get('feedback', ''),
-                            'score': er.get('score', 0),
-                        }
-                    break
-                except Exception as e:
-                    if any(c in str(e) for c in _RETRY_CODES):
-                        continue
-                    break
+    # No direct LLM usage here: unresolved free-text answers fall back to model answer display.
 
     # Fallback for any results that are still None (AI failed)
     for i, r in enumerate(results):
@@ -550,80 +636,12 @@ def evaluate_ai_answers(questions: list, student_answers: dict, language_level: 
 
 
 def generate_language_test_questions() -> list:
-    """AI-generated German language test (A1-C1) for onboarding.
-
-    This is intentionally kept local via Gemini as a temporary MVP shortcut.
-    Returns [] on any failure so the route can use static fallback questions.
-    """
-    if not _load_gemini():
-        return []
-
-    api_key = os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
-        return []
-
-    prompt = (
-        'Erstelle 10 allgemeine Deutsch-Testfragen (GER A1-C1, je 2 Fragen pro Niveau).\n'
-        'Themen: Grammatik (Kasus, Zeitformen, Konjunktionen), Wortschatz (Alltag, Schule, Arbeit), '
-        'Schreibstil (formell vs. informell), Redewendungen. KEIN Pflegekontext.\n'
-        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice.\n'
-        'Antworte NUR mit validem JSON:\n'
-        '{"questions":['
-        '{"type":"free_text","level":"A1","question":"...","model_answer":"..."},'
-        '{"type":"multiple_choice","level":"B1","question":"...","options":["A","B","C","D"],"answer":"A"}'
-        ']}'
-    )
-
-    try:
-        client = genai.Client(api_key=api_key)
-        cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
-        for model in _MODELS:
-            try:
-                resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-                parsed = _json.loads(_strip_md_code(resp.text))
-                questions = parsed.get('questions', [])
-                if len(questions) >= 8:
-                    return questions[:10]
-            except Exception as e:
-                if any(c in str(e) for c in _RETRY_CODES):
-                    continue
-                break
-    except Exception:
-        return []
-
+    """No direct Gemini usage in frontend app; route will use static fallback."""
     return []
 
 
 def generate_nursing_test_questions() -> list:
-    """AI-generated nursing knowledge test. Falls back to static on error."""
-    if not _load_gemini():
-        return []
-    api_key = os.environ.get('GOOGLE_API_KEY', '')
-    if not api_key:
-        return []
-
-    prompt = (
-        'Erstelle 10 Pflegewissen-Testfragen für Pflegeschüler (Grundausbildung).\n'
-        'Themen: Vitalzeichen, Hygiene, Lagerung, Dekubitus, Medikamente, Dokumentation, Notfall.\n'
-        'Mix: 6 Freitext-Fragen + 4 Multiple-Choice.\n'
-        'Antworte NUR mit validem JSON:\n'
-        '{"questions":['
-        '{"type":"free_text","question":"...","model_answer":"..."},'
-        '{"type":"multiple_choice","question":"...","options":["A","B","C","D"],"answer":"A"}'
-        ']}'
-    )
-    client = genai.Client(api_key=api_key)
-    cfg = genai_types.GenerateContentConfig(max_output_tokens=1400, temperature=0.5)
-    for model in _MODELS:
-        try:
-            resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-            questions = _json.loads(_strip_md_code(resp.text)).get('questions', [])
-            if len(questions) >= 8:
-                return questions[:10]
-        except Exception as e:
-            if any(c in str(e) for c in _RETRY_CODES):
-                continue
-            break
+    """No direct Gemini usage in frontend app; route will use static fallback."""
     return []
 
 
@@ -1011,9 +1029,90 @@ def _seed_demo_courses(teacher_id: int):
     db.session.commit()
 
 
+_DEMO_STUDENTS = [
+    # (first, last, country, language, speciality, level, nursing, xp)
+    ('Aylin',   'Yılmaz',     'Türkei',     'Türkisch',         'Krankenpflege',         'B2', 'fortgeschritten', 1840),
+    ('Mateusz', 'Kowalski',   'Polen',      'Polnisch',         'Altenpflege',           'B1', 'fortgeschritten', 1520),
+    ('Maria',   'Santos',     'Philippinen','Filipino / Tagalog','Intensivpflege',       'B2', 'fortgeschritten', 1380),
+    ('Andrei',  'Popescu',    'Rumänien',   'Rumänisch',        'Krankenpflege',         'B1', 'mittel',          1100),
+    ('Fatima',  'El Amrani',  'Marokko',    'Arabisch',         'Geriatrie',             'A2', 'mittel',           880),
+    ('Linh',    'Nguyen',     'Vietnam',    'Vietnamesisch',    'Kinderkrankenpflege',   'B1', 'mittel',           720),
+    ('Olena',   'Shevchenko', 'Ukraine',    'Ukrainisch',       'Notfallpflege',         'A2', 'mittel',           560),
+    ('Carlos',  'Ferreira',   'Portugal',   'Portugiesisch',    'Palliativpflege',       'B1', 'mittel',           430),
+    ('Amara',   'Okafor',     'Sonstiges',  'Englisch',         'Allgemeine Pflege',     'A2', 'beginner',         260),
+    ('Goran',   'Petrović',   'Serbien',    'Serbisch',         'OP-Pflege',             'A2', 'beginner',         140),
+]
+
+
+def _seed_demo_students():
+    """Seed demo students once so the leaderboard is populated on a fresh DB."""
+    from werkzeug.security import generate_password_hash
+    from datetime import date as _date, timedelta
+    from models import DailyGoal
+
+    today = _date.today()
+    for first, last, country, language, speciality, level, nursing, xp in _DEMO_STUDENTS:
+        email = f'demo.{first.lower()}@cura.local'
+        if User.query.filter_by(email=email).first():
+            continue
+        student = User(
+            role='student',
+            email=email,
+            password_hash=generate_password_hash('demo'),
+            first_name=first,
+            last_name=last,
+            country=country,
+            language=language,
+            speciality=speciality,
+            language_level=level,
+            nursing_level=nursing,
+            language_score=8 if level in ('B1', 'B2') else 5,
+            nursing_score=8 if nursing == 'fortgeschritten' else (6 if nursing == 'mittel' else 3),
+            xp=xp,
+        )
+        db.session.add(student)
+        db.session.flush()
+        # Give them a recent daily-goal record so streak/leaderboard look natural
+        db.session.add(DailyGoal(
+            student_id=student.id,
+            date=today - timedelta(days=1),
+            target_xp=50,
+            earned_xp=60,
+        ))
+    db.session.commit()
+
+
 def init_db(app):
     with app.app_context():
         db.create_all()
+
+        # Migrations: add columns + indexes if missing (safe for existing DBs)
+        _migrations = [
+            'ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)',
+            'ALTER TABLE quiz_attempt ADD COLUMN max_score INTEGER DEFAULT 5',
+            'ALTER TABLE quiz_attempt ADD COLUMN pct INTEGER DEFAULT 0',
+            'ALTER TABLE quiz_attempt ADD COLUMN next_review_at DATETIME',
+            'ALTER TABLE user ADD COLUMN xp INTEGER DEFAULT 0',
+            'CREATE INDEX IF NOT EXISTS ix_user_email ON user(email)',
+            'CREATE INDEX IF NOT EXISTS ix_enrollment_student_id ON enrollment(student_id)',
+            'CREATE INDEX IF NOT EXISTS ix_enrollment_course_id ON enrollment(course_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_enrollment_student_course ON enrollment(student_id, course_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_student_id ON quiz_attempt(student_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_module_id ON quiz_attempt(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_attempt_completed_at ON quiz_attempt(completed_at)',
+            'CREATE INDEX IF NOT EXISTS ix_module_course_id ON module(course_id)',
+            'CREATE INDEX IF NOT EXISTS ix_quiz_question_module_id ON quiz_question(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_flashcard_module_id ON flashcard(module_id)',
+            'CREATE INDEX IF NOT EXISTS ix_flashcard_progress_student_id ON flashcard_progress(student_id)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_goal_student_date ON daily_goal(student_id, date)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_lotto_week_position ON lotto_winner(week_date, position)',
+        ]
+        for stmt in _migrations:
+            try:
+                db.session.execute(db.text(stmt))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
         from werkzeug.security import generate_password_hash
         teacher = User.query.filter_by(email='lehrer@carelearn.de').first()
@@ -1030,19 +1129,6 @@ def init_db(app):
             )
             db.session.add(teacher)
             db.session.commit()
-
-        # Migrations: add columns if missing
-        for stmt in [
-            'ALTER TABLE course ADD COLUMN current_module_id INTEGER REFERENCES module(id)',
-            'ALTER TABLE quiz_attempt ADD COLUMN max_score INTEGER DEFAULT 5',
-            'ALTER TABLE quiz_attempt ADD COLUMN pct INTEGER DEFAULT 0',
-            'ALTER TABLE quiz_attempt ADD COLUMN next_review_at DATETIME',
-        ]:
-            try:
-                db.session.execute(db.text(stmt))
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
 
         # All known demo title sets (old and new) for cleanup
         OLD_DEMO_TITLES = {'Vitalzeichen und Monitoring', 'Hygiene und Infektionsschutz', 'Wundversorgung und Dekubitus'}
@@ -1082,3 +1168,5 @@ def init_db(app):
                 if c.owner_id != demo_owner.id:
                     c.owner_id = demo_owner.id
             db.session.commit()
+
+        _seed_demo_students()

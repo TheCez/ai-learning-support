@@ -1,0 +1,364 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="learn-hub">
+
+  <!-- Header -->
+  <div class="learn-hub-header">
+    <p class="learn-hub-section">02 — Lernen</p>
+    <h1 class="learn-hub-title">Was möchtest du <em>heute üben?</em></h1>
+    <p class="learn-hub-sub">Fünf Module, eine Lernreise. Kombiniere sie frei — oder folge deiner heutigen Mission.</p>
+  </div>
+
+  <!-- Module Selector -->
+  <div class="learn-module-bar">
+    <label for="learn-module-select"><strong>📋 Modul:</strong></label>
+    <select id="learn-module-select" class="learn-module-select">
+      <option value="random">🎲 Zufällig (gemischt)</option>
+      {% for course in enrolled_courses %}
+        <optgroup label="{{ course.title }}">
+          {% for module in course.modules %}
+            <option value="{{ module.id }}">{{ module.title }}</option>
+          {% endfor %}
+        </optgroup>
+      {% endfor %}
+    </select>
+    <span id="learn-module-hint" class="learn-module-hint"></span>
+  </div>
+
+  <!-- Module Cards Grid (like JSX LearningHub) -->
+  <div class="learn-grid" id="learn-grid">
+    <div class="learn-card" onclick="switchSection('flashcards')">
+      <div class="learn-card-icon learn-card-icon-terracotta">🗂️</div>
+      <div class="learn-card-body">
+        <h3>Karteikarten</h3>
+        <p>Fachbegriffe mit Spaced-Repetition lernen</p>
+        <span class="learn-card-time">⏱ 10–15 Min</span>
+      </div>
+      <span class="learn-card-arrow">›</span>
+    </div>
+    <div class="learn-card" onclick="switchSection('library')">
+      <div class="learn-card-icon learn-card-icon-sage">📖</div>
+      <div class="learn-card-body">
+        <h3>Bibliothek</h3>
+        <p>Themen in einfacher Sprache erklärt</p>
+        <span class="learn-card-time">⏱ flexibel</span>
+      </div>
+      <span class="learn-card-arrow">›</span>
+    </div>
+    <div class="learn-card" onclick="switchSection('quiz')">
+      <div class="learn-card-icon learn-card-icon-honey">✏️</div>
+      <div class="learn-card-body">
+        <h3>Quiz</h3>
+        <p>Single- &amp; Multiple-Choice, adaptiv</p>
+        <span class="learn-card-time">⏱ 5–10 Min</span>
+      </div>
+      <span class="learn-card-arrow">›</span>
+    </div>
+    <!-- Professor Card spans full width, highlighted -->
+    <div class="learn-card learn-card-highlight" onclick="window.location.href='{{ url_for('ki_lehrer') }}'">
+      <div class="learn-card-icon learn-card-icon-prof">👨‍⚕️</div>
+      <div class="learn-card-body">
+        <div class="learn-card-title-row">
+          <h3>Prof. Wagner — KI-Gespräch</h3>
+          <span class="learn-voice-chip">Voice</span>
+        </div>
+        <p>Sprachgespräch zum Thema deiner Wahl — er passt sich deinem Niveau an</p>
+        <span class="learn-card-time">⏱ offen</span>
+      </div>
+      <span class="learn-card-arrow">›</span>
+    </div>
+  </div>
+
+  <!-- Active Section Panels (hidden until card clicked) -->
+  <div id="learn-active-section" class="learn-active-section" style="display:none;">
+    <div class="learn-section-header">
+      <button class="learn-back-btn" onclick="closeSection()">← Zurück zur Übersicht</button>
+      <h2 id="learn-section-title"></h2>
+    </div>
+
+    <!-- Flashcards Panel -->
+    <div class="learn-panel" id="panel-flashcards">
+      <div class="flashcard-container" id="flashcard-area">
+        <p class="learn-empty">Wähle oben ein Modul, um Karteikarten zu laden.</p>
+      </div>
+    </div>
+
+    <!-- Library Panel -->
+    <div class="learn-panel" id="panel-library">
+      <div id="library-area">
+        <p class="learn-empty">Bibliothek wird geladen…</p>
+      </div>
+    </div>
+
+    <!-- Quiz Panel -->
+    <div class="learn-panel" id="panel-quiz">
+      <div id="quiz-area">
+        <p class="learn-empty">Wähle ein Modul und starte dann ein Quiz.</p>
+        <button class="button" id="start-quiz-btn" style="display:none;">Quiz starten</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Prof. Wagner Question (always visible) -->
+  <div class="learn-prof-bar">
+    <div class="learn-prof-avatar">👨‍⚕️</div>
+    <div class="learn-prof-form">
+      <h4>Schnelle Frage an Prof. Wagner</h4>
+      <div class="learn-prof-input-row">
+        <input type="text" id="quick-prof-question" class="learn-prof-input"
+               placeholder="z.B. Was ist der Unterschied zwischen systolisch und diastolisch?"
+               onkeydown="if(event.key==='Enter')askProfQuick()">
+        <button class="button" onclick="askProfQuick()">Fragen</button>
+      </div>
+      <div id="quick-prof-answer" class="learn-prof-answer"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* Collect all module IDs from the select */
+function getAllModuleIds() {
+  const opts = document.querySelectorAll('#learn-module-select option[value]');
+  return Array.from(opts).map(o => o.value).filter(v => v && v !== 'random');
+}
+function pickRandomModuleId() {
+  const ids = getAllModuleIds();
+  return ids.length ? ids[Math.floor(Math.random() * ids.length)] : null;
+}
+function getActiveModuleId() {
+  const sel = document.getElementById('learn-module-select').value;
+  if (sel && sel !== 'random') return sel;
+  return pickRandomModuleId();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const moduleSelect = document.getElementById('learn-module-select');
+
+  function loadModuleContent(mid) {
+    if (!mid) return;
+    document.getElementById('learn-module-hint').textContent = '';
+    loadFlashcards(mid);
+    loadLibrary(mid);
+    document.getElementById('start-quiz-btn').style.display = 'inline-block';
+    document.getElementById('start-quiz-btn').dataset.moduleId = mid;
+  }
+
+  moduleSelect.addEventListener('change', () => {
+    const mid = getActiveModuleId();
+    loadModuleContent(mid);
+  });
+
+  document.getElementById('start-quiz-btn').addEventListener('click', () => {
+    const mid = document.getElementById('start-quiz-btn').dataset.moduleId || getActiveModuleId();
+    window.location.href = `/quiz?module_id=${mid}`;
+  });
+
+  // Auto-load random module on page init
+  const initialMid = getActiveModuleId();
+  if (initialMid) {
+    loadModuleContent(initialMid);
+  }
+});
+
+let currentSection = null;
+function switchSection(section) {
+  /* If no content loaded yet, pick a random module */
+  if (!document.getElementById('start-quiz-btn').dataset.moduleId) {
+    const mid = getActiveModuleId();
+    if (mid) {
+      loadFlashcards(mid);
+      loadLibrary(mid);
+      document.getElementById('start-quiz-btn').style.display = 'inline-block';
+      document.getElementById('start-quiz-btn').dataset.moduleId = mid;
+    }
+  }
+  currentSection = section;
+  const titles = {flashcards: '🗂️ Karteikarten', library: '📖 Bibliothek', quiz: '✏️ Quiz'};
+  document.getElementById('learn-section-title').textContent = titles[section] || section;
+  document.querySelectorAll('.learn-panel').forEach(p => p.style.display = 'none');
+  document.getElementById('panel-' + section).style.display = 'block';
+  document.getElementById('learn-active-section').style.display = 'block';
+  document.getElementById('learn-grid').style.display = 'none';
+  document.getElementById('learn-active-section').scrollIntoView({behavior: 'smooth'});
+}
+function closeSection() {
+  document.getElementById('learn-active-section').style.display = 'none';
+  document.getElementById('learn-grid').style.display = 'grid';
+  currentSection = null;
+}
+
+// ── Flashcards ──
+let flashcards = [];
+let currentCard = 0;
+
+async function loadFlashcards(moduleId) {
+  const area = document.getElementById('flashcard-area');
+  area.innerHTML = '<div class="learn-loading"><div class="loading-dots"><span></span><span></span><span></span></div> Karteikarten werden geladen…</div>';
+  try {
+    const res = await fetch(`/api/flashcards/${moduleId}`);
+    const data = await res.json();
+    flashcards = data.cards;
+    currentCard = 0;
+    renderFlashcard();
+  } catch (e) {
+    area.innerHTML = '<p class="learn-error">Fehler beim Laden der Karteikarten.</p>';
+  }
+}
+
+function renderFlashcard() {
+  const area = document.getElementById('flashcard-area');
+  if (!flashcards.length) {
+    area.innerHTML = '<p class="learn-empty">Keine Karteikarten verfügbar.</p>';
+    return;
+  }
+  const c = flashcards[currentCard];
+  const boxLabels = ['Neu', 'Lernend', 'Geübt', 'Gefestigt', 'Gemeistert'];
+  area.innerHTML = `
+    <div class="fc-header">
+      <span class="fc-counter">Karte ${currentCard + 1} / ${flashcards.length}</span>
+      <span class="fc-box fc-box-${c.box}">${boxLabels[c.box] || 'Box ' + c.box}</span>
+    </div>
+    <div class="fc-card" id="flashcard" onclick="this.classList.toggle('flipped')">
+      <div class="fc-card-inner">
+        <div class="fc-front"><div class="fc-label">Begriff</div><div class="fc-text">${c.front}</div><div class="fc-hint">Tippen zum Umdrehen</div></div>
+        <div class="fc-back"><div class="fc-label">Erklärung</div><div class="fc-text">${c.back}</div></div>
+      </div>
+    </div>
+    <div class="fc-actions">
+      <button class="fc-btn fc-btn-hard" onclick="reviewCard(false)">Schwer</button>
+      <button class="fc-btn fc-btn-ok" onclick="reviewCard(false)">Okay</button>
+      <button class="fc-btn fc-btn-easy" onclick="reviewCard(true)">Einfach ✓</button>
+    </div>
+    <div class="fc-progress-wrap">
+      <div class="fc-progress" style="width: ${((currentCard + 1) / flashcards.length * 100).toFixed(0)}%"></div>
+    </div>
+  `;
+}
+
+window.reviewCard = async function(correct) {
+  const c = flashcards[currentCard];
+  try {
+    const res = await fetch(`/api/flashcards/${c.id}/review`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({correct})
+    });
+    const data = await res.json();
+    flashcards[currentCard].box = data.box;
+  } catch (e) {}
+  currentCard = (currentCard + 1) % flashcards.length;
+  renderFlashcard();
+};
+
+// ── Library (card-based, like JSX Bibliothek) ──
+let libCards = [];
+let libSimple = true; // true = Einfache Sprache, false = Fachsprache
+
+async function loadLibrary(moduleId) {
+  const area = document.getElementById('library-area');
+  area.innerHTML = '<div class="learn-loading"><div class="loading-dots"><span></span><span></span><span></span></div> Bibliothek wird geladen…</div>';
+  try {
+    const res = await fetch(`/api/library-cards/${moduleId}`);
+    const data = await res.json();
+    libCards = data.cards || [];
+    renderLibrary(moduleId);
+  } catch (e) {
+    area.innerHTML = '<p class="learn-error">Fehler beim Laden der Bibliothek.</p>';
+  }
+}
+
+function renderLibrary(moduleId) {
+  const area = document.getElementById('library-area');
+  if (!libCards.length) {
+    area.innerHTML = '<p class="learn-empty">Keine Themen verfügbar.</p>';
+    return;
+  }
+  const cards = libCards.map((c, i) => `
+    <div class="lib-topic-card">
+      <span class="lib-category">${c.category || 'THEMA'}</span>
+      <h3 class="lib-topic-title">${c.title}</h3>
+      <p class="lib-topic-text">${libSimple ? c.simple : c.technical}</p>
+      <button class="lib-deepen-btn" onclick="deepenWithProf(${i}, ${moduleId})">Mit Prof. Wagner vertiefen →</button>
+    </div>
+  `).join('');
+
+  area.innerHTML = `
+    <div class="lib-header">
+      <p class="lib-subtitle">Themen zum Nachlesen</p>
+      <div class="lib-lang-toggle">
+        <button class="lib-lang-btn ${libSimple ? 'active' : ''}" onclick="setLibLang(true, ${moduleId})">Einfache Sprache</button>
+        <button class="lib-lang-btn ${!libSimple ? 'active' : ''}" onclick="setLibLang(false, ${moduleId})">Fachsprache</button>
+      </div>
+    </div>
+    <div class="lib-cards-grid">${cards}</div>
+    <div class="lib-ask">
+      <h4>💬 Frage zum Thema stellen</h4>
+      <div class="lib-ask-row">
+        <input type="text" id="library-question" class="lib-input"
+               placeholder="Was möchtest du wissen?" onkeydown="if(event.key==='Enter')askLibrary(${moduleId})">
+        <button class="button" onclick="askLibrary(${moduleId})">Fragen</button>
+      </div>
+      <div id="library-answer"></div>
+    </div>
+  `;
+}
+
+window.setLibLang = function(simple, moduleId) {
+  libSimple = simple;
+  renderLibrary(moduleId);
+};
+
+window.deepenWithProf = function(cardIndex, moduleId) {
+  const card = libCards[cardIndex];
+  if (!card) return;
+  const q = encodeURIComponent(`Erkläre mir bitte das Thema "${card.title}" genauer.`);
+  window.location.href = `/ki-lehrer?frage=${q}`;
+};
+
+window.askLibrary = async function(moduleId) {
+  const q = document.getElementById('library-question').value.trim();
+  if (!q) return;
+  const ansEl = document.getElementById('library-answer');
+  ansEl.innerHTML = '<div class="learn-loading"><div class="loading-dots"><span></span><span></span><span></span></div> Antwort wird generiert…</div>';
+  try {
+    const res = await fetch('/api/library/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q, module_id: moduleId})
+    });
+    const data = await res.json();
+    ansEl.innerHTML = `<div class="lib-response">${formatText(data.response)}</div>`;
+  } catch (e) {
+    ansEl.innerHTML = '<p class="learn-error">Fehler bei der Antwort.</p>';
+  }
+};
+
+// ── Quick Prof Question ──
+async function askProfQuick() {
+  const input = document.getElementById('quick-prof-question');
+  const q = input.value.trim();
+  if (!q) return;
+  const ansEl = document.getElementById('quick-prof-answer');
+  ansEl.innerHTML = '<div class="learn-loading"><div class="loading-dots"><span></span><span></span><span></span></div> Prof. Wagner denkt nach…</div>';
+  try {
+    const res = await fetch('/api/library/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q})
+    });
+    const data = await res.json();
+    ansEl.innerHTML = `<div class="lib-response">${formatText(data.response)}</div>`;
+  } catch (e) {
+    ansEl.innerHTML = '<p class="learn-error">Fehler bei der Antwort.</p>';
+  }
+}
+window.askProfQuick = askProfQuick;
+
+function formatText(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+}
+</script>
+{% endblock %}

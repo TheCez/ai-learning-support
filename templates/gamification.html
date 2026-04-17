@@ -1,0 +1,182 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="gamification-page">
+  <h1 class="page-title">🏆 Erfolge</h1>
+
+  <!-- XP & Daily Goal -->
+  <div class="gam-grid">
+    <div class="card gam-xp-card">
+      <h2>⭐ Deine XP</h2>
+      <div class="xp-display">{{ user.xp or 0 }} XP</div>
+      {% if streak > 0 %}
+        <div class="streak-badge">🔥 {{ streak }} Tage Streak!</div>
+      {% endif %}
+    </div>
+
+    <div class="card gam-goal-card">
+      <h2>🎯 Tagesziel</h2>
+      <div class="goal-progress">
+        <div class="goal-bar-outer">
+          <div class="goal-bar-inner" style="width: {{ [((today_goal.earned_xp or 0) / (today_goal.target_xp or 50) * 100), 100] | min }}%"></div>
+        </div>
+        <span class="goal-text">{{ today_goal.earned_xp or 0 }} / {{ today_goal.target_xp or 50 }} XP</span>
+      </div>
+      <div class="goal-setter">
+        <label>Tagesziel setzen:</label>
+        <input type="number" id="goal-input" value="{{ today_goal.target_xp or 50 }}" min="10" max="500" step="10">
+        <button class="button button-sm" onclick="setGoal()">Speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaderboard -->
+  <div class="card gam-leaderboard">
+    <h2>🏅 Leaderboard</h2>
+    <table class="leaderboard-table">
+      <thead>
+        <tr><th>#</th><th>Name</th><th>XP</th></tr>
+      </thead>
+      <tbody>
+        {% for s in leaderboard %}
+        <tr class="{{ 'leaderboard-you' if s.id == user.id else '' }}">
+          <td>
+            {% if loop.index == 1 %}🥇
+            {% elif loop.index == 2 %}🥈
+            {% elif loop.index == 3 %}🥉
+            {% else %}{{ loop.index }}
+            {% endif %}
+          </td>
+          <td>{{ s.full_name() }}{% if s.id == user.id %} (Du){% endif %}</td>
+          <td>{{ s.xp or 0 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Friends & Missions -->
+  <div class="gam-grid">
+    <div class="card gam-friends-card">
+      <h2>👥 Freunde</h2>
+      {% if friends %}
+        <ul class="friends-list">
+          {% for f in friends %}
+            <li>{{ f.full_name() }} – {{ f.xp or 0 }} XP</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>Noch keine Freunde hinzugefügt.</p>
+      {% endif %}
+      <div class="add-friend-form">
+        <input type="email" id="friend-email" class="form-control" placeholder="E-Mail des Freundes">
+        <button class="button button-sm" onclick="addFriend()">Hinzufügen</button>
+      </div>
+      <div id="friend-msg"></div>
+    </div>
+
+    <div class="card gam-missions-card">
+      <h2>🎮 Freunde-Missionen</h2>
+      {% if missions %}
+        <ul class="missions-list">
+          {% for m in missions %}
+            <li>
+              <strong>{{ m.title }}</strong> ({{ m.target_xp }} XP)
+              <br><small>
+                {% if m.creator_id == user.id %}Du hast diese Mission erstellt{% else %}Mission von einem Freund{% endif %}
+              </small>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p>Keine aktiven Missionen.</p>
+      {% endif %}
+      {% if friends %}
+      <details class="mission-creator">
+        <summary>Neue Mission erstellen</summary>
+        <div class="mission-form">
+          <select id="mission-friend" class="form-control">
+            {% for f in friends %}
+              <option value="{{ f.id }}">{{ f.full_name() }}</option>
+            {% endfor %}
+          </select>
+          <input type="text" id="mission-title" class="form-control" placeholder="Mission-Titel">
+          <input type="number" id="mission-xp" class="form-control" value="30" min="10" max="200" step="10">
+          <button class="button button-sm" onclick="createMission()">Erstellen</button>
+        </div>
+      </details>
+      {% endif %}
+      <div id="mission-msg"></div>
+    </div>
+  </div>
+
+  <!-- Lotto -->
+  <div class="card gam-lotto">
+    <h2>🎰 Freitags-Lotto</h2>
+    {% if lotto_winners %}
+      <div class="lotto-winners">
+        <h3>Gewinner dieser Woche:</h3>
+        <ol>
+          {% for w in lotto_winners %}
+            <li>{{ w.student.full_name() }} – {{ w.student.xp or 0 }} XP</li>
+          {% endfor %}
+        </ol>
+      </div>
+    {% else %}
+      <p>Noch keine Ziehung diese Woche.</p>
+    {% endif %}
+    <p class="lotto-info">
+      Je höher dein Platz auf dem Leaderboard, desto größer deine Gewinnchance! 🍀
+    </p>
+  </div>
+</div>
+
+<script>
+async function setGoal() {
+  const val = document.getElementById('goal-input').value;
+  await fetch('/api/daily-goal', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({target_xp: parseInt(val)})
+  });
+  location.reload();
+}
+
+async function addFriend() {
+  const email = document.getElementById('friend-email').value.trim();
+  if (!email) return;
+  const res = await fetch('/api/friends/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('friend-msg');
+  if (data.success) {
+    msg.innerHTML = `<p class="flash flash-success">${data.name} hinzugefügt!</p>`;
+    setTimeout(() => location.reload(), 1000);
+  } else {
+    msg.innerHTML = `<p class="flash flash-danger">${data.error}</p>`;
+  }
+}
+
+async function createMission() {
+  const friend_id = document.getElementById('mission-friend').value;
+  const title = document.getElementById('mission-title').value.trim();
+  const target_xp = document.getElementById('mission-xp').value;
+  if (!title) return;
+  const res = await fetch('/api/missions/create', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({friend_id: parseInt(friend_id), title, target_xp: parseInt(target_xp)})
+  });
+  const data = await res.json();
+  const msg = document.getElementById('mission-msg');
+  if (data.success) {
+    msg.innerHTML = '<p class="flash flash-success">Mission erstellt!</p>';
+    setTimeout(() => location.reload(), 1000);
+  } else {
+    msg.innerHTML = `<p class="flash flash-danger">${data.error}</p>`;
+  }
+}
+</script>
+{% endblock %}

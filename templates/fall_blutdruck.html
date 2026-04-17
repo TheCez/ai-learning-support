@@ -1,0 +1,468 @@
+{% extends 'base.html' %}
+{% block content %}
+
+<script type="importmap">
+{
+  "imports": {
+    "three":          "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/":  "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "talkinghead":    "https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/modules/talkinghead.mjs"
+  }
+}
+</script>
+
+<script>window._fallCase = {{ case | tojson }};</script>
+
+<div class="fall-shell">
+
+  <!-- ── Header ──────────────────────────────────── -->
+  <div class="fall-header">
+    <div class="fall-breadcrumb">
+      <span class="chip chip-accent">Fallstudie · {{ case.level }}</span>
+      <h1 class="fall-title">{{ case.title }}</h1>
+    </div>
+    <div class="fall-meta">
+      <span class="fall-timer" id="fall-timer">00:00</span>
+      <a class="button button-sm button-secondary" href="{{ url_for('student_dashboard') }}">Abbrechen</a>
+    </div>
+  </div>
+
+  <!-- ── Body: Avatar+Chat (left) | Sidebar (right) ── -->
+  <div class="fall-body">
+
+    <div class="fall-left">
+      <div class="fall-avatar-section">
+        <div class="fall-avatar-wrap" id="fall-avatar-wrap">
+          <div id="fall-avatar-container" style="width:100%;height:100%;"></div>
+          <div class="fall-avatar-fallback" id="fall-avatar-fallback">🎓</div>
+        </div>
+        <div class="fall-prof-name">Prof. Wagner</div>
+        <div class="fall-speaking" id="fall-speaking">
+          <span class="fall-dot"></span><span class="fall-dot"></span><span class="fall-dot"></span>
+        </div>
+      </div>
+
+      <div class="fall-chat" id="fall-chat">
+        <div class="fall-placeholder" id="fall-placeholder">
+          <p>Prof. Wagner stellt sich gleich vor …</p>
+        </div>
+      </div>
+    </div>
+
+    <aside class="fall-sidebar">
+      <div class="fall-card fall-patient-card">
+        <div class="fall-patient-icon">🏥</div>
+        <div class="fall-patient-name">{{ case.patient.name }}, {{ case.patient.age }}</div>
+        <div class="fall-patient-room">{{ case.patient.room }}</div>
+        <hr>
+        <div class="fall-kv"><span>Beschwerde</span><strong>{{ case.patient.complaint }}</strong></div>
+        <div class="fall-kv"><span>Vorerkrankung</span><strong>{{ case.patient.history }}</strong></div>
+        <div class="fall-order">📋 {{ case.patient.order }}</div>
+      </div>
+
+      <div class="fall-card fall-checklist-card">
+        <h3>📋 Schritte</h3>
+        <ul class="fall-checklist" id="fall-checklist">
+          {% for s in case.steps %}
+          <li class="fall-step" data-key="{{ s.key }}">
+            <span class="fall-step-mark">○</span>
+            <span class="fall-step-label">{{ s.label }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        <div class="fall-progress-bar">
+          <div class="fall-progress-fill" id="fall-progress-fill" style="width:0%"></div>
+        </div>
+        <div class="fall-progress-text" id="fall-progress-text">0 / {{ case.steps|length }} Schritte</div>
+      </div>
+
+      <div class="fall-card fall-vocab-card">
+        <h3>💡 Fachvokabular</h3>
+        <ul class="fall-vocab">
+          {% for term, meaning in case.vocab %}
+          <li><strong>{{ term }}</strong><span>{{ meaning }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+    </aside>
+
+  </div><!-- /.fall-body -->
+
+  <!-- ── Input Bar ────────────────────────────────── -->
+  <div class="fall-input-bar">
+    <div class="fall-input-inner">
+      <button class="fall-mic-btn" id="fall-mic-btn"
+              title="Mikrofon — einmal drücken, bleibt aktiv"
+              onclick="fallToggleMic()" disabled>🎤</button>
+      <input class="fall-text-input" id="fall-text-input" type="text"
+             placeholder="Was machst du als Nächstes? Sprich oder tippe …" disabled
+             onkeydown="if(event.key==='Enter') fallSend()">
+      <button class="button fall-send-btn" id="fall-send-btn" onclick="fallSend()" disabled>Senden</button>
+    </div>
+    <div class="fall-mic-status hidden" id="fall-mic-status">
+      <span class="fall-cont-indicator"></span>
+      🎙️ Höre zu …
+      <button class="fall-stop-btn" onclick="fallStopContinuous()">⏹ Stop</button>
+    </div>
+  </div>
+
+  <!-- ── Finish Overlay ───────────────────────────── -->
+  <div class="fall-overlay hidden" id="fall-overlay">
+    <div class="fall-overlay-card">
+      <div class="fall-overlay-icon">🎉</div>
+      <h2>Fall abgeschlossen!</h2>
+      <p id="fall-overlay-msg">Du hast Frau Schmidt sicher und korrekt versorgt.</p>
+      <div class="fall-xp-display">+<span id="fall-xp-amount">80</span> XP</div>
+      <div class="fall-overlay-actions">
+        <a class="button" href="{{ url_for('student_dashboard') }}">Zurück zum Dashboard</a>
+        <button class="button button-secondary" onclick="location.reload()">Fall wiederholen</button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /.fall-shell -->
+
+<script>
+// ── State ──────────────────────────────────────
+let fallConversation = [];
+let fallCompleted    = [];
+let fallFinished     = false;
+let fallIsLoading    = false;
+let fallIsRecording  = false;
+let fallContinuous   = false;
+let fallStartTime    = Date.now();
+const fallSteps      = window._fallCase.steps;
+
+// ── Timer ──────────────────────────────────────
+setInterval(() => {
+  const sec = Math.floor((Date.now() - fallStartTime) / 1000);
+  const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+  const ss = String(sec % 60).padStart(2, '0');
+  const el = document.getElementById('fall-timer');
+  if (el) el.textContent = `${mm}:${ss}`;
+}, 1000);
+
+// ── Helpers ────────────────────────────────────
+function fallEsc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function fallAddBubble(role, text) {
+  const chat = document.getElementById('fall-chat');
+  const wrap = document.createElement('div');
+  wrap.className = `fall-bubble-wrap fall-bubble-${role}`;
+  if (role === 'professor') {
+    const av = document.createElement('div');
+    av.className = 'fall-bubble-avatar';
+    av.textContent = '🎓';
+    wrap.appendChild(av);
+  }
+  const bubble = document.createElement('div');
+  bubble.className = 'fall-bubble';
+  bubble.innerHTML = fallEsc(text).replace(/\n/g, '<br>');
+  wrap.appendChild(bubble);
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function fallShowLoading() {
+  const chat = document.getElementById('fall-chat');
+  const wrap = document.createElement('div');
+  wrap.className = 'fall-bubble-wrap fall-bubble-professor';
+  wrap.id = 'fall-loading-bubble';
+  wrap.innerHTML = '<div class="fall-bubble-avatar">🎓</div><div class="fall-bubble"><span class="fall-typing"><span></span><span></span><span></span></span></div>';
+  chat.appendChild(wrap);
+  chat.scrollTop = chat.scrollHeight;
+}
+function fallRemoveLoading() {
+  const el = document.getElementById('fall-loading-bubble');
+  if (el) el.remove();
+}
+
+function fallSetInputEnabled(on) {
+  document.getElementById('fall-text-input').disabled = !on;
+  document.getElementById('fall-send-btn').disabled = !on;
+  document.getElementById('fall-mic-btn').disabled = !on;
+}
+
+function fallUpdateChecklist(completed, newly) {
+  const total = fallSteps.length;
+  completed.forEach(key => {
+    const li = document.querySelector(`.fall-step[data-key="${key}"]`);
+    if (!li) return;
+    if (!li.classList.contains('done')) {
+      li.classList.add('done');
+      li.querySelector('.fall-step-mark').textContent = '✓';
+    }
+    if (newly && newly.includes(key)) {
+      li.classList.add('just-done');
+      setTimeout(() => li.classList.remove('just-done'), 1500);
+    }
+  });
+  const pct = Math.round(completed.length / total * 100);
+  document.getElementById('fall-progress-fill').style.width = pct + '%';
+  document.getElementById('fall-progress-text').textContent =
+    `${completed.length} / ${total} Schritte`;
+}
+
+function fallShowFinish(xp) {
+  const overlay = document.getElementById('fall-overlay');
+  document.getElementById('fall-xp-amount').textContent = xp || 80;
+  overlay.classList.remove('hidden');
+}
+
+// ── Greeting ───────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  fallShowLoading();
+  fetch('/api/fall/blutdruck/turn', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({conversation: [], completed: [], greeting: true})
+  })
+  .then(r => r.json())
+  .then(data => {
+    fallRemoveLoading();
+    document.getElementById('fall-placeholder').style.display = 'none';
+    const text = data.response || `${window._fallCase.patient.name} wartet auf dich. Was machst du als Erstes?`;
+    fallConversation.push({role: 'model', text});
+    fallAddBubble('professor', text);
+    fallSetInputEnabled(true);
+    if (window.fallSpeak) window.fallSpeak(text);
+  })
+  .catch(() => {
+    fallRemoveLoading();
+    fallAddBubble('professor', 'Verbindungsfehler – bitte Seite neu laden.');
+  });
+});
+
+// ── Send turn ──────────────────────────────────
+function fallSend() {
+  if (fallFinished || fallIsLoading) return;
+  window.fallResumeAudio && window.fallResumeAudio();
+  const input = document.getElementById('fall-text-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  fallIsLoading = true;
+  fallSetInputEnabled(false);
+  fallConversation.push({role: 'user', text});
+  fallAddBubble('student', text);
+  fallShowLoading();
+
+  fetch('/api/fall/blutdruck/turn', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      conversation: fallConversation.slice(-20),
+      completed: fallCompleted,
+      already_finished: fallFinished,
+      duration_sec: Math.floor((Date.now() - fallStartTime) / 1000),
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    fallRemoveLoading();
+    const resp = data.response || '…';
+    fallConversation.push({role: 'model', text: resp});
+    fallAddBubble('professor', resp);
+    fallCompleted = data.completed || fallCompleted;
+    fallUpdateChecklist(fallCompleted, data.newly_completed || []);
+    if (window.fallSpeak) window.fallSpeak(resp);
+
+    if (data.finished && !fallFinished) {
+      fallFinished = true;
+      setTimeout(() => fallShowFinish(data.xp_awarded), 2000);
+    }
+    fallIsLoading = false;
+    fallSetInputEnabled(!fallFinished);
+  })
+  .catch(() => {
+    fallRemoveLoading();
+    fallAddBubble('professor', 'Netzwerkfehler – bitte erneut versuchen.');
+    fallIsLoading = false;
+    fallSetInputEnabled(true);
+  });
+}
+
+// ── Voice (Whisper-only via /api/stt) ──────────
+let fallMediaRecorder = null;
+let fallAudioChunks = [];
+let fallSilenceTimer = null;
+let fallAudioAnalyser = null;
+let fallAudioStream = null;
+let fallHadSpeech = false;
+const FALL_SILENCE = 6, FALL_SPEECH = 12;
+
+function fallToggleMic() {
+  window.fallResumeAudio && window.fallResumeAudio();
+  if (fallIsRecording) { fallStopContinuous(); return; }
+  fallContinuous = true;
+  fallUpdateMicUI();
+  fallStartMic();
+}
+
+async function fallStartMic() {
+  if (fallIsRecording || fallIsLoading || fallFinished) return;
+
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (e) { fallContinuous = false; fallUpdateMicUI(); alert('Mikrofon: ' + e.message); return; }
+  fallAudioStream = stream;
+  fallHadSpeech = false; fallIsRecording = true;
+  fallUpdateMicUI();
+  document.getElementById('fall-mic-status').classList.remove('hidden');
+  window.speechSynthesis && window.speechSynthesis.cancel();
+
+  const actx = new AudioContext();
+  const src = actx.createMediaStreamSource(stream);
+  fallAudioAnalyser = actx.createAnalyser();
+  fallAudioAnalyser.fftSize = 512;
+  src.connect(fallAudioAnalyser);
+  const buf = new Uint8Array(fallAudioAnalyser.fftSize);
+
+  function check() {
+    if (!fallIsRecording) return;
+    fallAudioAnalyser.getByteTimeDomainData(buf);
+    const rms = Math.sqrt(buf.reduce((s,v) => s + (v-128)*(v-128), 0) / buf.length);
+    if (rms >= FALL_SPEECH) fallHadSpeech = true;
+    if (rms < FALL_SILENCE) {
+      if (!fallSilenceTimer) fallSilenceTimer = setTimeout(() => fallIsRecording && fallFinishRec(), 1400);
+    } else {
+      clearTimeout(fallSilenceTimer); fallSilenceTimer = null;
+    }
+    requestAnimationFrame(check);
+  }
+  requestAnimationFrame(check);
+
+  const mt = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+  fallMediaRecorder = new MediaRecorder(stream, {mimeType: mt});
+  fallAudioChunks = [];
+  fallMediaRecorder.ondataavailable = e => { if (e.data.size > 0) fallAudioChunks.push(e.data); };
+  fallMediaRecorder.onstop = fallOnRecStop;
+  fallMediaRecorder.start(100);
+}
+
+function fallFinishRec() {
+  if (!fallIsRecording) return;
+  clearTimeout(fallSilenceTimer); fallSilenceTimer = null;
+  fallIsRecording = false; fallUpdateMicUI();
+  if (fallMediaRecorder && fallMediaRecorder.state !== 'inactive') fallMediaRecorder.stop();
+  if (fallAudioStream) { fallAudioStream.getTracks().forEach(t => t.stop()); fallAudioStream = null; }
+}
+
+async function fallOnRecStop() {
+  if (!fallAudioChunks.length || !fallHadSpeech) {
+    fallAudioChunks = []; fallHadSpeech = false;
+    if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
+    return;
+  }
+  const blob = new Blob(fallAudioChunks, {type: fallMediaRecorder.mimeType});
+  fallAudioChunks = []; fallHadSpeech = false;
+  document.getElementById('fall-text-input').value = '…';
+  try {
+    const resp = await fetch('/api/stt', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+    const data = await resp.json();
+    const text = (data.text || '').trim();
+    document.getElementById('fall-text-input').value = text;
+    if (text) fallSend();
+    else if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
+  } catch (e) {
+    document.getElementById('fall-text-input').value = '';
+    if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
+  }
+}
+
+function fallStopContinuous() {
+  fallContinuous = false;
+  fallFinishRec();
+  fallUpdateMicUI();
+  document.getElementById('fall-mic-status').classList.add('hidden');
+}
+
+function fallUpdateMicUI() {
+  const btn = document.getElementById('fall-mic-btn');
+  if (fallContinuous) btn.classList.add('recording');
+  else btn.classList.remove('recording');
+}
+
+// ── Voice output ───────────────────────────────
+window.fallSpeakFallback = function(text) {
+  if (!window.speechSynthesis) { if (fallContinuous) setTimeout(fallStartMic, 400); return; }
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang = 'de-DE'; utt.rate = 0.92; utt.pitch = 1.05;
+  const voices = speechSynthesis.getVoices();
+  const de = voices.find(v => v.lang.startsWith('de') && !v.name.includes('Google'))
+          || voices.find(v => v.lang.startsWith('de'));
+  if (de) utt.voice = de;
+  utt.onstart = () => fallSetSpeaking(true);
+  utt.onend   = () => { fallSetSpeaking(false);
+    if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 400); };
+  utt.onerror = () => { fallSetSpeaking(false);
+    if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 600); };
+  speechSynthesis.speak(utt);
+};
+window.fallSpeak = window.fallSpeakFallback;
+
+function fallSetSpeaking(on) {
+  const wrap = document.getElementById('fall-avatar-wrap');
+  const lbl  = document.getElementById('fall-speaking');
+  if (on) { wrap.classList.add('speaking'); lbl.classList.add('visible'); }
+  else    { wrap.classList.remove('speaking'); lbl.classList.remove('visible'); }
+}
+window.fallGetState = () => ({continuous: fallContinuous, loading: fallIsLoading});
+
+if (window.speechSynthesis) {
+  speechSynthesis.getVoices();
+  speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
+}
+</script>
+
+<!-- TalkingHead avatar (overrides fallSpeak with lip sync) -->
+<script type="module">
+import { TalkingHead } from 'talkinghead';
+(async () => {
+  const container = document.getElementById('fall-avatar-container');
+  const fallback  = document.getElementById('fall-avatar-fallback');
+  if (!container) return;
+  try {
+    const head = new TalkingHead(container, {
+      ttsEndpoint: '/api/tts-proxy', ttsApikey: '',
+      lipsyncModules: ['en','fi'], cameraView: 'upper', modelFPS: 30,
+      mixerGainSpeech: 3, mixerGainBackground: 0,
+    });
+    await head.showAvatar({
+      url: 'https://cdn.jsdelivr.net/gh/met4citizen/TalkingHead@1.7/avatars/brunette.glb',
+      body: 'F', avatarMood: 'neutral',
+      ttsLang: 'de-DE', ttsVoice: 'de-DE-Standard-C', ttsRate: 0.92, lipsyncLang: 'fi',
+    });
+    if (fallback) fallback.style.display = 'none';
+    window.fallResumeAudio = () => {
+      if (head.audioCtx && head.audioCtx.state !== 'running') head.audioCtx.resume();
+    };
+    window.fallSpeak = async function(text) {
+      if (!text) return;
+      if (head.audioCtx && head.audioCtx.state !== 'running') {
+        try { await head.audioCtx.resume(); } catch(e) {}
+      }
+      window.fallSetSpeaking && window.fallSetSpeaking(true);
+      try { await head.speakText(text); }
+      catch (e) { window.fallSpeakFallback(text); return; }
+      window.fallSetSpeaking && window.fallSetSpeaking(false);
+      const st = window.fallGetState && window.fallGetState();
+      if (st && st.continuous && !st.loading) setTimeout(() => fallStartMic(), 400);
+    };
+  } catch (err) {
+    console.warn('TalkingHead init failed; Web Speech fallback active', err);
+  }
+})();
+window.fallSetSpeaking = (on) => {
+  const wrap = document.getElementById('fall-avatar-wrap');
+  const lbl  = document.getElementById('fall-speaking');
+  if (on) { wrap.classList.add('speaking'); lbl.classList.add('visible'); }
+  else    { wrap.classList.remove('speaking'); lbl.classList.remove('visible'); }
+};
+</script>
+
+{% endblock %}

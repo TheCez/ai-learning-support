@@ -105,6 +105,9 @@ AI Learning Support UI built with Flask for nursing education. Features include 
 ✅ STT robustness improvements (NEW)
   - Frontend guard against empty audio blobs prevents unnecessary API calls
   - Backend gracefully handles empty audio with HTTP 200 response instead of 400 crash
+✅ Gamification branch integration (NEW)
+  - AI generation paths for KI-Professor, KI-Lehrer, flashcards, library summary/cards, quizzes, and blood-pressure case-study turns are routed through internal `llm_api` endpoints
+  - Direct Gemini bypass usage was removed from frontend service-layer logic to comply with architecture rules in `BACKEND_API_REFERENCE.md`
 
 ### Not Yet Implemented
 - Flashcard system

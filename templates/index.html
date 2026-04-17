@@ -1,50 +1,56 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="hero">
-  <h1>Willkommen bei <span>Cura</span></h1>
-  <p>Die smarte Lernplattform für Pflegeschulen – mit adaptiven Kursen, KI-Unterricht und Spaced-Repetition-Quizzes, angepasst an dein Sprachniveau.</p>
-  {% if not current_user %}
-  <div class="hero-actions">
-    <a class="button" href="{{ url_for('register') }}">Jetzt registrieren</a>
-    <a class="button button-secondary" href="{{ url_for('login') }}">Anmelden</a>
+
+<!-- Killer Demo Teaser -->
+<div class="killer-banner">
+  <div class="killer-banner-icon">🎓</div>
+  <div class="killer-banner-content">
+    <h2 class="killer-banner-title">
+      Killer-Demo: Blutdruckmessung bei Frau Schmidt
+      <span class="chip-accent">Voice · Live</span>
+    </h2>
+    <p class="killer-banner-desc">
+      Sprich mit Prof. Wagner über einen echten Patientenfall — er fragt zurück, korrigiert live,
+      und führt dich Schritt für Schritt durch die Messung. Per Stimme, auf deinem Sprachniveau.
+    </p>
+    {% if current_user %}
+      <a class="button" href="{{ url_for('fall_blutdruck') }}">Fall jetzt starten →</a>
+    {% else %}
+      <a class="button" href="{{ url_for('register') }}">Registrieren & ausprobieren →</a>
+    {% endif %}
   </div>
-  {% else %}
-  <div class="hero-actions">
-    <a class="button" href="{{ url_for('student_dashboard' if current_user.role == 'student' else 'teacher_dashboard') }}">Zum Dashboard</a>
-  </div>
-  {% endif %}
 </div>
 
 <div class="feature-grid">
   <article>
-    <div class="feature-icon">📚</div>
-    <h3>Adaptive Kurse</h3>
-    <p>Lernmaterial wird deinem Deutschniveau und Vorwissen angepasst – von A1 bis C1.</p>
+    <div class="feature-icon">🗣️</div>
+    <h3>Voice-to-Voice KI-Gespräche</h3>
+    <p>Sprich mit Prof. Wagner über Patientenfälle — er passt Sprache und Schwierigkeit an dein Niveau an.</p>
   </article>
   <article>
-    <div class="feature-icon">✅</div>
-    <h3>Quizzes & Tests</h3>
-    <p>Überprüfe dein Wissen mit interaktiven Quiz-Modulen und sieh sofort, was du gelernt hast.</p>
-  </article>
-  <article>
-    <div class="feature-icon">🎓</div>
-    <h3>KI-Professorin</h3>
-    <p>Stelle Fragen zu Pflegethemen und erhalte Erklärungen auf deinem persönlichen Sprachniveau.</p>
+    <div class="feature-icon">📋</div>
+    <h3>Echte Pflegefälle</h3>
+    <p>Blutdruck messen, Dekubitus verhindern, Notfall-Maßnahmen — du übst an realen Szenarien.</p>
   </article>
   <article>
     <div class="feature-icon">🌍</div>
-    <h3>Für internationale Fachkräfte</h3>
-    <p>Sprachtest und Pflegewissenstest beim Onboarding – für einen guten Start in Deutschland.</p>
+    <h3>Adaptiv nach Sprachniveau</h3>
+    <p>A1 bis C1: Einstufungstest beim Start, danach passt sich alles an — Vokabular, Erklärungen, Tempo.</p>
+  </article>
+  <article>
+    <div class="feature-icon">🧠</div>
+    <h3>Spaced Repetition</h3>
+    <p>Karteikarten mit Leitner-System: Was du vergisst, kommt öfter. Was sitzt, kommt seltener.</p>
+  </article>
+  <article>
+    <div class="feature-icon">🏆</div>
+    <h3>Gamification & Lotto</h3>
+    <p>XP, Streak, Leaderboard, Freundes-Missionen — und jeden Freitag eine Kantinengutschein-Lotterie.</p>
   </article>
   <article>
     <div class="feature-icon">📊</div>
-    <h3>Lernfortschritt</h3>
-    <p>Schüler und Lehrkräfte sehen jederzeit, welche Module abgeschlossen sind.</p>
-  </article>
-  <article>
-    <div class="feature-icon">🏥</div>
-    <h3>Pflegefachlich fundiert</h3>
-    <p>Inhalte orientieren sich am Rahmenlehrplan der deutschen Pflegeausbildung.</p>
+    <h3>KIP-Dashboard für Schulen</h3>
+    <p>Lehrkräfte sehen Themenbeherrschung, Aktivität und bekommen KI-gestützte Unterrichtsempfehlungen.</p>
   </article>
 </div>
 {% endblock %}

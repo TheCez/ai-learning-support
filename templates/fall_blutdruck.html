@@ -285,28 +285,14 @@ function fallSend() {
   });
 }
 
-// ── Voice (mirrors ki_lehrer.html) ─────────────
-let fallSttMode = 'unknown';
+// ── Voice (Whisper-only via /api/stt) ──────────
 let fallMediaRecorder = null;
 let fallAudioChunks = [];
 let fallSilenceTimer = null;
 let fallAudioAnalyser = null;
 let fallAudioStream = null;
 let fallHadSpeech = false;
-let fallWebSpeechRec = null;
 const FALL_SILENCE = 6, FALL_SPEECH = 12;
-
-async function fallDetectStt() {
-  try {
-    const r = await fetch('/api/stt', {
-      method: 'POST',
-      headers: {'Content-Type': 'audio/webm'},
-      body: new Blob([], {type: 'audio/webm'})
-    });
-    const d = await r.json();
-    fallSttMode = (d.error === 'stt_unavailable') ? 'webspeech' : 'elevenlabs';
-  } catch (e) { fallSttMode = 'webspeech'; }
-}
 
 function fallToggleMic() {
   window.fallResumeAudio && window.fallResumeAudio();
@@ -318,31 +304,6 @@ function fallToggleMic() {
 
 async function fallStartMic() {
   if (fallIsRecording || fallIsLoading || fallFinished) return;
-  if (fallSttMode === 'unknown') await fallDetectStt();
-
-  if (fallSttMode === 'webspeech') {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert('Spracheingabe nicht unterstützt — bitte Chrome/Edge nutzen.'); return; }
-    fallIsRecording = true;
-    fallUpdateMicUI();
-    document.getElementById('fall-mic-status').classList.remove('hidden');
-    fallWebSpeechRec = new SR();
-    fallWebSpeechRec.lang = 'de-DE';
-    fallWebSpeechRec.interimResults = false;
-    fallWebSpeechRec.onresult = e => {
-      const text = (e.results[0][0].transcript || '').trim();
-      fallIsRecording = false; fallUpdateMicUI();
-      document.getElementById('fall-text-input').value = text;
-      if (text) fallSend();
-      else if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
-    };
-    fallWebSpeechRec.onerror = () => { fallIsRecording = false; fallUpdateMicUI();
-      if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 500); };
-    fallWebSpeechRec.onend = () => { fallIsRecording = false; fallUpdateMicUI();
-      if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300); };
-    fallWebSpeechRec.start();
-    return;
-  }
 
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({audio: true}); }
@@ -402,14 +363,12 @@ async function fallOnRecStop() {
   try {
     const resp = await fetch('/api/stt', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const data = await resp.json();
-    if (data.error === 'stt_unavailable') { fallSttMode = 'webspeech';
-      if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300); return; }
     const text = (data.text || '').trim();
     document.getElementById('fall-text-input').value = text;
     if (text) fallSend();
     else if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
   } catch (e) {
-    fallSttMode = 'webspeech';
+    document.getElementById('fall-text-input').value = '';
     if (fallContinuous && !fallIsLoading) setTimeout(fallStartMic, 300);
   }
 }
@@ -417,7 +376,6 @@ async function fallOnRecStop() {
 function fallStopContinuous() {
   fallContinuous = false;
   fallFinishRec();
-  if (fallWebSpeechRec) { try { fallWebSpeechRec.abort(); } catch(e) {} fallWebSpeechRec = null; }
   fallUpdateMicUI();
   document.getElementById('fall-mic-status').classList.add('hidden');
 }

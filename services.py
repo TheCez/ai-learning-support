@@ -15,6 +15,28 @@ def _safe_post(path: str, payload: dict, timeout: int = 30) -> dict:
     except Exception:
         return {}
 
+
+def _gemini_direct(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
+    """Direct OpenAI call from Flask — fallback when backend is unavailable."""
+    try:
+        import openai as _oai
+        key = os.environ.get('OPENAI_API_KEY', '')
+        if not key:
+            return ''
+        oc = _oai.OpenAI(api_key=key)
+        resp = oc.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            temperature=temperature,
+        )
+        return (resp.choices[0].message.content or '').strip() if resp.choices else ''
+    except Exception:
+        pass
+    return ''
+
 LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1']
 
 # ────────────────────────────────────────────────
@@ -257,8 +279,26 @@ def get_ai_professor_response(topic: str, student_level: str, course_context: st
     return answer or 'Keine Antwort erhalten.'
 
 
-def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = False, user_first_name: str = '') -> dict:
-    """Calls llm_api /generate_presentation for KI-Lehrer."""
+def call_evaluate_answer(question: str, student_answer: str, expected_keywords: list, persona: str = 'ki_professor') -> dict:
+    """Calls llm_api /evaluate_answer to grade a student's quiz response."""
+    payload = {
+        'question': question,
+        'student_answer': student_answer,
+        'expected_keywords': expected_keywords or [],
+        'persona': persona,
+    }
+    result = _safe_post('/evaluate_answer', payload)
+    if result and result.get('spoken_feedback'):
+        return result
+    return {
+        'is_correct': False,
+        'feedback': 'Bewertung nicht verfügbar.',
+        'spoken_feedback': 'Ich konnte deine Antwort leider nicht bewerten.',
+    }
+
+
+def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = False, user_first_name: str = '', course_context: str = '') -> dict:
+    """Calls llm_api /generate_presentation for KI-Lehrer. Falls back to direct Gemini if backend unavailable."""
     query = ''
     for msg in reversed(conversation or []):
         if msg.get('role') == 'user':
@@ -273,20 +313,46 @@ def call_ki_lehrer_chat(course_id: str, conversation: list, is_greeting: bool = 
         'course_id': str(course_id or 'all'),
         'query': query,
         'persona': 'ki_professor',
+        'course_context': course_context or '',
+        'conversation': [{'role': m.get('role', ''), 'text': m.get('text', '')} for m in (conversation or [])[-8:]],
     }
     data = _safe_post('/generate_presentation', payload)
+    slides = (data or {}).get('slides', [])
+
+    # Fallback: backend quota/unavailable → call Gemini directly with module content
+    if not slides:
+        system = (
+            "Du bist Prof. Wagner, ein freundlicher Pflegepädagoge. "
+            "Antworte immer auf Deutsch in 3-4 Sätzen. "
+            "Erkläre klar und endet mit einer offenen Frage an den Schüler."
+        )
+        if course_context:
+            system += f"\n\nModulinhalt:\n{course_context}"
+        speech = _gemini_direct(system, query)
+        if speech:
+            return {'slides': [{'title': 'Prof. Wagner', 'bullets': [], 'spoken_text': speech, 'image_url': None, 'source_page': None}]}
+
     return data if isinstance(data, dict) else {'slides': []}
 
 
-def call_fall_blutdruck_turn(course_id: str, student_context: str, prompt: str) -> dict:
-    """Calls llm_api /generate_answer for case-study turn responses."""
+def call_fall_blutdruck_turn(course_id: str, student_context: str, prompt: str, course_context: str = '') -> dict:
+    """Calls llm_api /generate_answer for case-study turn responses. Falls back to direct Gemini."""
     payload = {
         'course_id': str(course_id or 'all'),
         'query': prompt,
         'student_context': student_context or '',
         'persona': 'ki_professor',
+        'course_context': course_context or '',
     }
-    return _safe_post('/generate_answer', payload)
+    result = _safe_post('/generate_answer', payload)
+    answer = (result or {}).get('answer', '')
+    bad = {'', 'Das wurde im Kursmaterial nicht gefunden.', 'This was not found in the uploaded material.', 'No response generated.'}
+    if not answer or answer in bad:
+        # Fallback: call Gemini directly with the full system prompt as context
+        speech = _gemini_direct(course_context or 'Du bist Prof. Wagner.', prompt)
+        if speech:
+            return {'answer': speech, 'images': []}
+    return result or {}
 
 
 def call_gemini_chat(system_instruction: str, contents_list: list) -> str:
@@ -460,7 +526,8 @@ def build_fall_blutdruck_prompt(first_name: str, language_level: str,
     next_step = None
     for i, s in enumerate(case['steps'], start=1):
         mark = '[✓]' if s['key'] in done_set else '[ ]'
-        steps_lines.append(f"{mark} {i}. {s['label']} — {s['hint']}")
+        # Never show hints — only mark done/not-done so the AI knows progress
+        steps_lines.append(f"{mark} Schritt {i}")
         if next_step is None and s['key'] not in done_set:
             next_step = s
     steps_block = '\n'.join(steps_lines)
@@ -470,18 +537,18 @@ def build_fall_blutdruck_prompt(first_name: str, language_level: str,
         last_step = next((s for s in case['steps'] if s['key'] == last_completed), None)
         if last_step:
             progress_note = (
-                f'\n\n## SOEBEN KORREKT GENANNT\n'
-                f'„{last_step["label"]}" — bestätige das in 1 Satz positiv und konkret '
-                f'(z. B. „Genau, du prüfst das Armband — sicher!"), '
-                f'dann gehe direkt zum NÄCHSTEN offenen Schritt über.'
+                f'\n\n## SOEBEN KORREKT BEANTWORTET\n'
+                f'Bestätige in 1 kurzem lobenden Satz (ohne die Antwort zu wiederholen), '
+                f'dann stelle sofort die nächste offene Frage.'
             )
 
     next_block = ''
     if next_step:
         next_block = (
-            f'\n\n## NÄCHSTER ZU ERFRAGENDER SCHRITT\n'
-            f'{next_step["label"]} — {next_step["hint"]}\n'
-            f'Stelle dazu EINE kurze offene Frage. Verrate die Antwort NICHT vorab.'
+            f'\n\n## NÄCHSTE PFLEGEHANDLUNG (nur du weißt das)\n'
+            f'Intern: {next_step["label"]}\n'
+            f'Stelle EINE offene Frage die den Schüler selbst darauf bringt — '
+            f'nenne die Antwort NIEMALS direkt oder als Tipp.'
         )
     else:
         next_block = (
@@ -539,7 +606,8 @@ def build_student_context(user) -> str:
 
 
 def generate_flashcards(module, language_level: str, student_context: str = '', num_cards: int = 5) -> list:
-    """Generate flashcards via llm_api endpoint."""
+    """Generate flashcards via llm_api endpoint, with direct fallback using module content."""
+    module_context = f"Modul: {module.title}\n\n{module.content}" if getattr(module, 'content', None) else ''
     payload = {
         'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all',
         'num_cards': int(num_cards or 5),
@@ -548,6 +616,25 @@ def generate_flashcards(module, language_level: str, student_context: str = '', 
     }
     result = _safe_post('/generate_flashcards', payload)
     cards = result.get('flashcards', []) if isinstance(result, dict) else []
+    if not cards and module_context:
+        # Fallback: generate directly with GPT using module content
+        system = (
+            'Du bist ein Pflegepädagoge. Erstelle prägnante Lernkarteikarten auf Deutsch. '
+            'Antworte NUR mit gültigem JSON: {"flashcards": [{"front": "...", "back": "..."}]}'
+        )
+        user = (
+            f'{module_context}\n\n'
+            f'Erstelle genau {num_cards} Karteikarten zu diesem Modul. '
+            f'Niveau: {language_level}. Nur JSON zurückgeben.'
+        )
+        raw = _gemini_direct(system, user, temperature=0.3)
+        if raw:
+            import json as _j
+            try:
+                parsed = _j.loads(raw)
+                cards = parsed.get('flashcards', [])
+            except Exception:
+                pass
     return cards if isinstance(cards, list) else []
 
 
@@ -575,12 +662,33 @@ def generate_library_cards(module, language_level: str, student_context: str = '
 
 
 def generate_ai_quiz(module, language_level: str, num_questions: int = 5) -> list:
-    """Generate quiz via llm_api /generate_quiz endpoint."""
+    """Generate quiz via llm_api /generate_quiz endpoint, with direct fallback using module content."""
+    module_context = f"Modul: {module.title}\n\n{module.content}" if getattr(module, 'content', None) else ''
     payload = {
         'course_id': str(module.course_id) if hasattr(module, 'course_id') and module.course_id else 'all'
     }
     result = _safe_post('/generate_quiz', payload)
     quiz_data = result.get('quiz', []) if isinstance(result, dict) else []
+
+    if not quiz_data and module_context:
+        # Fallback: generate directly with GPT using module content
+        system = (
+            'Du bist ein Pflegepädagoge. Erstelle Multiple-Choice-Quizfragen auf Deutsch. '
+            'Antworte NUR mit gültigem JSON: {"quiz": [{"question": "...", "options": ["A","B","C","D"], "answer_index": 0, "explanation": "..."}]}'
+        )
+        user = (
+            f'{module_context}\n\n'
+            f'Erstelle genau {num_questions} Multiple-Choice-Fragen mit je 4 Antwortoptionen. '
+            f'Nur JSON zurückgeben.'
+        )
+        raw = _gemini_direct(system, user, temperature=0.3)
+        if raw:
+            import json as _j
+            try:
+                parsed = _j.loads(raw)
+                quiz_data = parsed.get('quiz', [])
+            except Exception:
+                pass
 
     questions = []
     for i, q in enumerate((quiz_data or [])[:num_questions]):

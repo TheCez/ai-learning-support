@@ -10,7 +10,7 @@ from models import (db, User, Course, Module, Enrollment, QuizQuestion, QuizAtte
                     CaseStudyAttempt, friendship)
 from services import (init_db, calculate_language_level, calculate_nursing_level,
                       LANGUAGE_TEST, NURSING_TEST, get_ai_professor_response,
-                      call_ki_lehrer_chat, build_ki_lehrer_system_prompt,
+                      call_ki_lehrer_chat, call_evaluate_answer, build_ki_lehrer_system_prompt,
                       generate_ai_quiz, evaluate_ai_answers,
                       generate_language_test_questions, generate_nursing_test_questions,
                       build_student_context, generate_flashcards, generate_library_summary,
@@ -823,14 +823,35 @@ def ki_lehrer_api(user):
     if not resolved_course_id:
         resolved_course_id = 'all'
 
-    print(f"DEBUG: KI-Lehrer route resolved course_id: {resolved_course_id}")
+    # Only use the selected module's content as context — never mix modules
+    course_context = ''
+    try:
+        if module_id not in (None, ''):
+            mod = Module.query.get(int(module_id))
+            if mod and mod.content:
+                course_context = f"Modulthema: {mod.title}\n\n{mod.content}"
+    except Exception:
+        pass
 
-    # Call the external LLM API for KI-Lehrer generation
     result = call_ki_lehrer_chat(
         course_id=resolved_course_id,
         conversation=conversation,
         is_greeting=is_greeting,
-        user_first_name=user.first_name
+        user_first_name=user.first_name,
+        course_context=course_context,
+    )
+    return jsonify(result)
+
+
+@app.route('/api/evaluate-answer', methods=['POST'])
+@login_required(role='student')
+def evaluate_answer_api(user):
+    data = request.get_json(silent=True) or {}
+    result = call_evaluate_answer(
+        question=str(data.get('question') or ''),
+        student_answer=str(data.get('student_answer') or ''),
+        expected_keywords=data.get('expected_keywords') or [],
+        persona=str(data.get('persona') or 'ki_professor'),
     )
     return jsonify(result)
 
@@ -917,6 +938,10 @@ def stt_proxy():
     ext = 'webm' if 'webm' in content_type else 'mp3' if 'mp3' in content_type else 'webm'
 
     # ── 1. OpenAI Whisper ────────────────────────────────────────
+    # Reject tiny blobs — likely noise, not speech (Whisper hallucinates on silence)
+    if len(audio_data) < 4000:
+        return _j.dumps({'text': ''}), 200, {'Content-Type': 'application/json'}
+
     openai_key = os.environ.get('OPENAI_API_KEY', '')
     if openai_key:
         try:
@@ -929,8 +954,23 @@ def stt_proxy():
                 file=audio_file,
                 language='de',
                 response_format='text',
+                prompt='Pflegeausbildung, Pflege, Patient, Blutdruck, Herzkreislauf, Medizin.',
             )
             text = result.strip() if isinstance(result, str) else (result.text or '').strip()
+            # Filter known Whisper hallucination phrases
+            _hallucinations = {
+                'vielen dank für ihre aufmerksamkeit',
+                'vielen dank',
+                'danke schön',
+                'untertitel von',
+                'untertitel der amara.org',
+                'bis zum nächsten mal',
+                'auf wiedersehen',
+                '.',
+                'ich danke ihnen',
+            }
+            if text.lower().strip('.! ') in _hallucinations:
+                text = ''
             return _j.dumps({'text': text}), 200, {'Content-Type': 'application/json'}
         except Exception:
             pass  # fall through to ElevenLabs
@@ -1280,9 +1320,13 @@ def api_fall_blutdruck_turn(user):
 
     student_ctx = build_student_context(user)
     transcript = '\n'.join([f"{c.get('role','')}: {c.get('text','')}" for c in contents])
-    prompt = f"{system}\n\nVerlauf:\n{transcript}\n\nAntworte auf den letzten Schülerturn didaktisch korrekt."
-    llm_result = call_fall_blutdruck_turn('all', student_ctx, prompt)
-    speech = str(llm_result.get('answer', '') or 'Ich konnte gerade keine Antwort erzeugen. Bitte versuche es erneut.').strip()
+    last_turn = contents[-1].get('text', '') if contents else ''
+    prompt = f"Verlauf:\n{transcript}\n\nAntworte auf den letzten Schülerturn didaktisch korrekt auf Deutsch."
+    llm_result = call_fall_blutdruck_turn('all', student_ctx, prompt, course_context=system)
+    _raw_speech = str(llm_result.get('answer', '') or '').strip()
+    _bad = {'no response generated.', 'this was not found in the uploaded material.',
+            'das wurde im kursmaterial nicht gefunden.'}
+    speech = _raw_speech if _raw_speech and _raw_speech.lower() not in _bad else 'Bitte versuche es erneut.'
 
     finished = len(completed) >= len(FALL_BLUTDRUCK['steps'])
     xp_awarded = 0
@@ -1449,4 +1493,4 @@ def debug_env():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
